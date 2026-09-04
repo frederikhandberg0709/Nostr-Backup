@@ -22,6 +22,8 @@ final class MediaFocusOverlay: NSView {
     private var zoomScale: CGFloat = 1
     private var panOffset = CGPoint.zero
     private var dragStartOffset = CGPoint.zero
+    private var baseMediaFrame = NSRect.zero
+    private var zoomAnchor = CGPoint.zero
 
     var reference: BlossomMediaReference { references[currentIndex] }
     var onSave: ((BlossomMediaReference) async -> Void)?
@@ -142,11 +144,11 @@ final class MediaFocusOverlay: NSView {
         imageView.wantsLayer = true
         imageView.layer?.cornerRadius = 12
         imageView.layer?.masksToBounds = true
-        imageView.onClick = { [weak self] in self?.toggleZoom() }
+        imageView.onClick = { [weak self] point in self?.toggleZoom(at: point) }
         imageView.onDragStart = { [weak self] in self?.dragStartOffset = self?.panOffset ?? .zero }
         imageView.onDrag = { [weak self] offset in self?.pan(by: offset) }
         imageView.onDragEnd = { [weak self] offset in self?.handleSwipe(offset) }
-        imageView.onMagnify = { [weak self] amount in self?.adjustZoom(by: amount) }
+        imageView.onMagnify = { [weak self] amount, point in self?.adjustZoom(by: amount, at: point) }
 
         playerView.controlsStyle = .floating
         playerView.videoGravity = .resizeAspect
@@ -191,7 +193,8 @@ final class MediaFocusOverlay: NSView {
         )
         imageView.frame = stageFrame
         playerView.frame = stageFrame
-        centerTransformAnchor(for: imageView)
+        baseMediaFrame = stageFrame
+        if zoomScale == 1 { zoomAnchor = CGPoint(x: stageFrame.midX, y: stageFrame.midY) }
 
         let footerWidth = min(max(280, stageSize.width), max(1, bounds.width - 80))
         footer.frame = NSRect(x: (bounds.width - footerWidth) / 2, y: max(24, stageFrame.minY - 54), width: footerWidth, height: footerHeight)
@@ -234,27 +237,37 @@ final class MediaFocusOverlay: NSView {
         refresh()
     }
 
-    private func toggleZoom() { zoomScale = zoomScale > 1 ? 1 : 2.5; panOffset = .zero; applyTransform() }
-    private func adjustZoom(by amount: CGFloat) { zoomScale = min(max(zoomScale + amount, 1), 5); if zoomScale == 1 { panOffset = .zero }; applyTransform() }
+    private func toggleZoom(at localPoint: CGPoint) {
+        zoomAnchor = convert(localPoint, from: imageView)
+        zoomScale = zoomScale > 1 ? 1 : 2.5
+        panOffset = .zero
+        applyTransform()
+    }
+    private func adjustZoom(by amount: CGFloat, at localPoint: CGPoint) {
+        zoomAnchor = convert(localPoint, from: imageView)
+        zoomScale = min(max(zoomScale + amount, 1), 5)
+        if zoomScale == 1 { panOffset = .zero }
+        applyTransform()
+    }
     private func resetTransform() { zoomScale = 1; panOffset = .zero; applyTransform() }
     private func pan(by offset: CGPoint) {
         guard zoomScale > 1 else { return }
-        let maxX = imageView.bounds.width * (zoomScale - 1) / 2
-        let maxY = imageView.bounds.height * (zoomScale - 1) / 2
+        let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
+        let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
         panOffset = CGPoint(x: min(max(dragStartOffset.x + offset.x, -maxX), maxX), y: min(max(dragStartOffset.y + offset.y, -maxY), maxY))
         applyTransform()
     }
     private func applyTransform() {
-        imageView.layer?.setAffineTransform(CGAffineTransform(translationX: panOffset.x, y: panOffset.y).scaledBy(x: zoomScale, y: zoomScale))
-    }
-
-    private func centerTransformAnchor(for view: NSView) {
-        guard let layer = view.layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        layer.position = CGPoint(x: view.frame.midX, y: view.frame.midY)
-        CATransaction.commit()
+        guard baseMediaFrame != .zero else { return }
+        let origin = CGPoint(
+            x: baseMediaFrame.minX + (1 - zoomScale) * (zoomAnchor.x - baseMediaFrame.minX) + panOffset.x,
+            y: baseMediaFrame.minY + (1 - zoomScale) * (zoomAnchor.y - baseMediaFrame.minY) + panOffset.y
+        )
+        imageView.layer?.setAffineTransform(.identity)
+        imageView.frame = NSRect(
+            origin: origin,
+            size: CGSize(width: baseMediaFrame.width * zoomScale, height: baseMediaFrame.height * zoomScale)
+        )
     }
     private func handleSwipe(_ offset: CGPoint) {
         if abs(offset.y) > 60, abs(offset.y) > abs(offset.x) { dismiss() }
@@ -273,8 +286,8 @@ final class MediaFocusOverlay: NSView {
 
 @MainActor
 private final class FocusImageView: NSImageView {
-    var onClick: (() -> Void)?
-    var onMagnify: ((CGFloat) -> Void)?
+    var onClick: ((CGPoint) -> Void)?
+    var onMagnify: ((CGFloat, CGPoint) -> Void)?
     var onDragStart: (() -> Void)?
     var onDrag: ((CGPoint) -> Void)?
     var onDragEnd: ((CGPoint) -> Void)?
@@ -288,14 +301,16 @@ private final class FocusImageView: NSImageView {
             let offset = CGPoint(x: location.x - start.x, y: location.y - start.y)
             if event.type == .leftMouseDragged { onDrag?(offset) }
             if event.type == .leftMouseUp {
-                if abs(offset.x) < 4, abs(offset.y) < 4 { onClick?() }
+                if abs(offset.x) < 4, abs(offset.y) < 4 { onClick?(convert(location, from: nil)) }
                 else { onDragEnd?(offset) }
                 return
             }
         }
     }
 
-    override func magnify(with event: NSEvent) { onMagnify?(event.magnification) }
+    override func magnify(with event: NSEvent) {
+        onMagnify?(event.magnification, convert(event.locationInWindow, from: nil))
+    }
 
     override func resetCursorRects() {
         super.resetCursorRects()
