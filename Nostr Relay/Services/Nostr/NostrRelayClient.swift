@@ -2,12 +2,15 @@ import Foundation
 
 struct NostrRelayClient {
     private let pageSize = 10_000
+    private let relayURLs: [URL]
 
-    // These public relays are deliberately kept in one place until relay preferences are added.
-    private let relayURLs = [
-        URL(string: "wss://relay.damus.io")!,
-        URL(string: "wss://nos.lol")!
-    ]
+    init(relayURLs: [URL] = RelayConfiguration.defaultRelayURLs) {
+        self.relayURLs = relayURLs
+    }
+
+    var relayAddresses: [String] {
+        relayURLs.map(\.absoluteString)
+    }
 
     func fetchAuthoredEvents(publicKey: String) async throws -> [NostrEvent] {
         var uniqueEvents: [String: NostrEvent] = [:]

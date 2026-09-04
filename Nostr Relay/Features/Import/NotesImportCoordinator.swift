@@ -15,7 +15,7 @@ final class NotesImportCoordinator {
         let archiveURL = try archiveStore.save(
             npub: npub,
             publicKey: publicKey,
-            relays: ["wss://relay.damus.io", "wss://nos.lol"],
+            relays: relayClient.relayAddresses,
             events: events
         )
         let profile = events
