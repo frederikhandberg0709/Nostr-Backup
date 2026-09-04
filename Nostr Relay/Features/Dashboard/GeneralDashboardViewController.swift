@@ -47,12 +47,24 @@ final class GeneralDashboardViewController: NSViewController {
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 20
+        content.edgeInsets = NSEdgeInsets(top: 44, left: 42, bottom: 28, right: 42)
         content.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(content)
+
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = content
+        view.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 42),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -42),
-            content.topAnchor.constraint(equalTo: view.topAnchor, constant: 44)
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            content.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            biography.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -84)
         ])
     }
 
