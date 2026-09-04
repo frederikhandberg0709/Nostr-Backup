@@ -47,6 +47,11 @@ final class MediaFocusOverlay: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     func present(over parent: NSView) {
         frame = parent.bounds
         autoresizingMask = [.width, .height]
@@ -137,7 +142,7 @@ final class MediaFocusOverlay: NSView {
         imageView.wantsLayer = true
         imageView.layer?.cornerRadius = 12
         imageView.layer?.masksToBounds = true
-        imageView.onDoubleClick = { [weak self] in self?.toggleZoom() }
+        imageView.onClick = { [weak self] in self?.toggleZoom() }
         imageView.onDragStart = { [weak self] in self?.dragStartOffset = self?.panOffset ?? .zero }
         imageView.onDrag = { [weak self] offset in self?.pan(by: offset) }
         imageView.onDragEnd = { [weak self] offset in self?.handleSwipe(offset) }
@@ -186,6 +191,7 @@ final class MediaFocusOverlay: NSView {
         )
         imageView.frame = stageFrame
         playerView.frame = stageFrame
+        centerTransformAnchor(for: imageView)
 
         let footerWidth = min(max(280, stageSize.width), max(1, bounds.width - 80))
         footer.frame = NSRect(x: (bounds.width - footerWidth) / 2, y: max(24, stageFrame.minY - 54), width: footerWidth, height: footerHeight)
@@ -241,6 +247,15 @@ final class MediaFocusOverlay: NSView {
     private func applyTransform() {
         imageView.layer?.setAffineTransform(CGAffineTransform(translationX: panOffset.x, y: panOffset.y).scaledBy(x: zoomScale, y: zoomScale))
     }
+
+    private func centerTransformAnchor(for view: NSView) {
+        guard let layer = view.layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: view.frame.midX, y: view.frame.midY)
+        CATransaction.commit()
+    }
     private func handleSwipe(_ offset: CGPoint) {
         if abs(offset.y) > 60, abs(offset.y) > abs(offset.x) { dismiss() }
         else if abs(offset.x) > 60, abs(offset.x) > abs(offset.y) { navigate(to: currentIndex + (offset.x < 0 ? 1 : -1)) }
@@ -258,14 +273,13 @@ final class MediaFocusOverlay: NSView {
 
 @MainActor
 private final class FocusImageView: NSImageView {
-    var onDoubleClick: (() -> Void)?
+    var onClick: (() -> Void)?
     var onMagnify: ((CGFloat) -> Void)?
     var onDragStart: (() -> Void)?
     var onDrag: ((CGPoint) -> Void)?
     var onDragEnd: ((CGPoint) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { onDoubleClick?(); return }
         guard let window else { return }
         let start = event.locationInWindow
         onDragStart?()
@@ -273,9 +287,18 @@ private final class FocusImageView: NSImageView {
             let location = event.locationInWindow
             let offset = CGPoint(x: location.x - start.x, y: location.y - start.y)
             if event.type == .leftMouseDragged { onDrag?(offset) }
-            if event.type == .leftMouseUp { onDragEnd?(offset); return }
+            if event.type == .leftMouseUp {
+                if abs(offset.x) < 4, abs(offset.y) < 4 { onClick?() }
+                else { onDragEnd?(offset) }
+                return
+            }
         }
     }
 
     override func magnify(with event: NSEvent) { onMagnify?(event.magnification) }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
 }
