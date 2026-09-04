@@ -105,7 +105,7 @@ private final class DashboardSidebarViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let title = NSTextField(labelWithString: "Nostr Relay")
+        let title = NSTextField(labelWithString: "Nostr Backup")
         title.font = .systemFont(ofSize: 16, weight: .bold)
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -133,12 +133,8 @@ private final class DashboardSidebarViewController: NSViewController {
     }
 
     private func button(_ title: String, symbol: String, tag: Int) -> SidebarButton {
-        let button = SidebarButton(title: title, target: self, action: #selector(selectSection(_:)))
+        let button = SidebarButton(title: title, symbol: symbol, target: self, action: #selector(selectSection(_:)))
         button.tag = tag
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.imagePosition = .imageLeading
-        button.alignment = .left
-        button.lineBreakMode = .byTruncatingTail
         button.heightAnchor.constraint(equalToConstant: 36).isActive = true
         return button
     }
@@ -158,7 +154,17 @@ private final class DashboardSidebarViewController: NSViewController {
 private final class SidebarButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
     var isCurrentSection = false { didSet { updateAppearance() } }
+
+    convenience init(title: String, symbol: String, target: AnyObject?, action: Selector?) {
+        self.init(frame: .zero)
+        self.target = target
+        self.action = action
+        titleLabel.stringValue = title
+        iconView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+    }
 
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); configure() }
     required init?(coder: NSCoder) { super.init(coder: coder); configure() }
@@ -166,16 +172,37 @@ private final class SidebarButton: NSButton {
     private func configure() {
         isBordered = false
         bezelStyle = .regularSquare
-        font = .systemFont(ofSize: 13, weight: .medium)
+        title = ""
+        image = nil
         wantsLayer = true
         layer?.cornerRadius = 8
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.symbolConfiguration = .init(pointSize: 14, weight: .medium)
+        iconView.imageScaling = .scaleProportionallyDown
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(iconView)
+        addSubview(titleLabel)
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
         updateAppearance()
     }
 
     private func updateAppearance() {
         let background: NSColor = isCurrentSection ? .selectedContentBackgroundColor : (isHovering ? .controlBackgroundColor.withAlphaComponent(0.7) : .clear)
         layer?.backgroundColor = background.cgColor
-        contentTintColor = isCurrentSection ? .selectedMenuItemTextColor : .secondaryLabelColor
+        let foreground = isCurrentSection ? NSColor.selectedMenuItemTextColor : .secondaryLabelColor
+        iconView.contentTintColor = foreground
+        titleLabel.textColor = foreground
     }
 
     override func updateTrackingAreas() {

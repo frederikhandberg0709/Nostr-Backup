@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureWindow() {
-        window.title = "Nostr Relay"
+        window.title = "Nostr Backup"
         window.minSize = NSSize(width: 560, height: 500)
         window.setContentSize(NSSize(width: 640, height: 560))
         window.center()
