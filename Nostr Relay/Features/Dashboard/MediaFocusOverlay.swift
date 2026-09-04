@@ -87,6 +87,17 @@ final class MediaFocusOverlay: NSView {
     // therefore backdrop clicks.
     override func mouseDown(with event: NSEvent) { dismiss() }
 
+    override func scrollWheel(with event: NSEvent) {
+        guard zoomScale > 1 else { return }
+        let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
+        let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
+        panOffset = CGPoint(
+            x: min(max(panOffset.x + event.scrollingDeltaX, -maxX), maxX),
+            y: min(max(panOffset.y - event.scrollingDeltaY, -maxY), maxY)
+        )
+        applyTransform()
+    }
+
     func refresh() {
         messageLabel.stringValue = ""
         fileLabel.stringValue = reference.sourceURL.lastPathComponent.isEmpty ? reference.hash : reference.sourceURL.lastPathComponent
