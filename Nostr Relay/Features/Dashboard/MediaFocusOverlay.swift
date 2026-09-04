@@ -33,6 +33,17 @@ final class MediaFocusOverlay: NSVisualEffectView {
             topAnchor.constraint(equalTo: parent.topAnchor),
             bottomAnchor.constraint(equalTo: parent.bottomAnchor)
         ])
+        window?.makeFirstResponder(self)
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // Escape
+            removeFromSuperview()
+        } else {
+            super.keyDown(with: event)
+        }
     }
 
     func refresh() {
@@ -69,6 +80,10 @@ final class MediaFocusOverlay: NSVisualEffectView {
 
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.symbolConfiguration = .init(pointSize: 96, weight: .light)
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         stateLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         saveButton.title = "Save locally"
@@ -96,7 +111,9 @@ final class MediaFocusOverlay: NSVisualEffectView {
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 34),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -34),
             imageView.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -100),
-            imageView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, constant: -180)
+            imageView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, constant: -180),
+            imageView.widthAnchor.constraint(lessThanOrEqualToConstant: 1_200),
+            imageView.heightAnchor.constraint(lessThanOrEqualToConstant: 800)
         ])
     }
 
