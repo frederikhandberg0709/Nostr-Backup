@@ -154,6 +154,7 @@ private final class DashboardSidebarViewController: NSViewController {
 private final class SidebarButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
+    private let backgroundLayer = CALayer()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     var isCurrentSection = false { didSet { updateAppearance() } }
@@ -176,6 +177,10 @@ private final class SidebarButton: NSButton {
         image = nil
         wantsLayer = true
         layer?.cornerRadius = 8
+        layer?.masksToBounds = false
+        backgroundLayer.cornerRadius = 8
+        backgroundLayer.masksToBounds = true
+        layer?.insertSublayer(backgroundLayer, at: 0)
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.symbolConfiguration = .init(pointSize: 14, weight: .medium)
@@ -198,11 +203,77 @@ private final class SidebarButton: NSButton {
     }
 
     private func updateAppearance() {
-        let background: NSColor = isCurrentSection ? .selectedContentBackgroundColor : (isHovering ? .controlBackgroundColor.withAlphaComponent(0.7) : .clear)
-        layer?.backgroundColor = background.cgColor
+        let background = isCurrentSection ? NSColor.selectedContentBackgroundColor : .controlBackgroundColor
+        let opacity: Float = isCurrentSection ? 1 : (isHovering ? 0.7 : 0)
+        animateBackground(color: background.cgColor, opacity: opacity)
         let foreground = isCurrentSection ? NSColor.selectedMenuItemTextColor : .secondaryLabelColor
         iconView.contentTintColor = foreground
         titleLabel.textColor = foreground
+    }
+
+    override func layout() {
+        super.layout()
+        backgroundLayer.frame = bounds
+        centerAnimationAnchorIfNeeded()
+    }
+
+    /// AppKit backing layers may start with a lower-left anchor point. Move the
+    /// position by the matching amount so changing the anchor never moves the view.
+    private func centerAnimationAnchorIfNeeded() {
+        guard let layer, layer.anchorPoint != CGPoint(x: 0.5, y: 0.5) else { return }
+        let oldAnchor = layer.anchorPoint
+        let newAnchor = CGPoint(x: 0.5, y: 0.5)
+        let position = layer.position
+        let size = layer.bounds.size
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.anchorPoint = newAnchor
+        layer.position = CGPoint(
+            x: position.x + (newAnchor.x - oldAnchor.x) * size.width,
+            y: position.y + (newAnchor.y - oldAnchor.y) * size.height
+        )
+        CATransaction.commit()
+    }
+
+    private func animateBackground(color: CGColor, opacity: Float) {
+        let previousColor = backgroundLayer.presentation()?.backgroundColor ?? backgroundLayer.backgroundColor
+        let previousOpacity = backgroundLayer.presentation()?.opacity ?? backgroundLayer.opacity
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backgroundLayer.backgroundColor = color
+        backgroundLayer.opacity = opacity
+        CATransaction.commit()
+
+        let colorAnimation = CABasicAnimation(keyPath: "backgroundColor")
+        colorAnimation.fromValue = previousColor
+        colorAnimation.toValue = color
+        colorAnimation.duration = 0.16
+        colorAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        backgroundLayer.add(colorAnimation, forKey: "sidebarBackgroundColor")
+
+        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
+        opacityAnimation.fromValue = previousOpacity
+        opacityAnimation.toValue = opacity
+        opacityAnimation.duration = 0.16
+        opacityAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        backgroundLayer.add(opacityAnimation, forKey: "sidebarBackgroundOpacity")
+    }
+
+    private func animateScale(to scale: CGFloat, duration: CFTimeInterval) {
+        guard let layer else { return }
+        let transform = CATransform3DMakeScale(scale, scale, 1)
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = layer.presentation()?.transform ?? layer.transform
+        animation.toValue = transform
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = transform
+        CATransaction.commit()
+        layer.add(animation, forKey: "sidebarPressScale")
     }
 
     override func updateTrackingAreas() {
@@ -215,4 +286,10 @@ private final class SidebarButton: NSButton {
 
     override func mouseEntered(with event: NSEvent) { isHovering = true; updateAppearance() }
     override func mouseExited(with event: NSEvent) { isHovering = false; updateAppearance() }
+
+    override func mouseDown(with event: NSEvent) {
+        animateScale(to: 0.97, duration: 0.09)
+        super.mouseDown(with: event)
+        animateScale(to: 1, duration: 0.16)
+    }
 }
