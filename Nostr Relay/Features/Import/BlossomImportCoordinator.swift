@@ -51,4 +51,14 @@ final class BlossomImportCoordinator {
             failedCount: failedCount
         )
     }
+
+    func saveMedia(_ reference: BlossomMediaReference) async throws -> Bool {
+        if try mediaStore.contains(reference.hash) {
+            try mediaStore.registerExisting(reference)
+            return false
+        }
+
+        let data = try await mediaClient.download(from: reference.sourceURL)
+        return try mediaStore.save(data, for: reference)
+    }
 }

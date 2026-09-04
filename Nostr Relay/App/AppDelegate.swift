@@ -19,7 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         importViewController.onImportBlossom = { [weak self] npub in
             self?.importBlossom(for: npub)
         }
-        window.contentViewController = importViewController
+        if let npub = UserDefaults.standard.string(forKey: "lastImportedNpub"),
+           let events = try? NotesArchiveStore().allEvents(for: npub),
+           !events.isEmpty {
+            showDashboard(for: npub)
+        } else {
+            window.contentViewController = importViewController
+        }
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -43,8 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
 
             do {
-                let summary = try await importCoordinator.importNotes(for: npub)
-                importViewController.showImportSucceeded(summary)
+                _ = try await importCoordinator.importNotes(for: npub)
+                UserDefaults.standard.set(npub, forKey: "lastImportedNpub")
+                showDashboard(for: npub)
             } catch {
                 importViewController.showImportFailed(error)
             }
@@ -68,5 +75,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             importViewController.setBlossomImporting(false)
         }
+    }
+
+    private func showDashboard(for npub: String) {
+        let archiveStore = NotesArchiveStore()
+        guard let events = try? archiveStore.allEvents(for: npub) else { return }
+
+        let dashboard = DashboardViewController(npub: npub, events: events)
+        dashboard.onSaveMedia = { [blossomImportCoordinator] reference in
+            try await blossomImportCoordinator.saveMedia(reference)
+        }
+        window.contentViewController = dashboard
     }
 }

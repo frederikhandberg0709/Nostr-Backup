@@ -12,6 +12,10 @@ struct BlossomMediaStore {
         try existingMediaURL(for: hash) != nil
     }
 
+    func localURL(for hash: String) throws -> URL? {
+        try existingMediaURL(for: hash)
+    }
+
     @discardableResult
     func save(_ data: Data, for reference: BlossomMediaReference) throws -> Bool {
         let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
