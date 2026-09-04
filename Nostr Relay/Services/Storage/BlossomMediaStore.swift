@@ -16,6 +16,18 @@ struct BlossomMediaStore {
         try existingMediaURL(for: hash)
     }
 
+    func storageStatistics() -> (fileCount: Int, byteCount: Int) {
+        guard let directory = try? mediaDirectory(),
+              let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return (0, 0)
+        }
+        let mediaFiles = files.filter { $0.lastPathComponent != "manifest.json" }
+        let byteCount = mediaFiles.reduce(0) { total, url in
+            total + ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return (mediaFiles.count, byteCount)
+    }
+
     @discardableResult
     func save(_ data: Data, for reference: BlossomMediaReference) throws -> Bool {
         let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

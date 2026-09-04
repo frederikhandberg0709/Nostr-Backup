@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let archiveStore = NotesArchiveStore()
         guard let events = try? archiveStore.allEvents(for: npub) else { return }
 
-        let dashboard = DashboardViewController(npub: npub, events: events)
+        let dashboard = DashboardContainerViewController(npub: npub, events: events)
         dashboard.onSaveMedia = { [blossomImportCoordinator] reference in
             try await blossomImportCoordinator.saveMedia(reference)
         }
