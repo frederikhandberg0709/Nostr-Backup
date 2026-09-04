@@ -25,6 +25,18 @@ final class GeneralDashboardViewController: NSViewController {
         let mediaStats = BlossomMediaStore().storageStatistics()
         let title = NSTextField(labelWithString: "General")
         title.font = .systemFont(ofSize: 28, weight: .bold)
+        let imageView = AspectFillImageView()
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.image = NSImage(systemSymbolName: "person.crop.circle.fill", accessibilityDescription: "Profile picture")
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
+        imageView.symbolConfiguration = .init(pointSize: 68, weight: .regular)
+        imageView.contentTintColor = .secondaryLabelColor
+        imageView.wantsLayer = true
+        imageView.layer?.cornerRadius = 36
+        imageView.layer?.masksToBounds = true
+        imageView.setContentHuggingPriority(.required, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.required, for: .horizontal)
         let name = NSTextField(labelWithString: profile?.displayName ?? "Nostr account")
         name.font = .systemFont(ofSize: 19, weight: .semibold)
         let username = NSTextField(labelWithString: profile?.username ?? abbreviated(npub))
@@ -35,6 +47,13 @@ final class GeneralDashboardViewController: NSViewController {
         profileStack.orientation = .vertical
         profileStack.alignment = .leading
         profileStack.spacing = 5
+        profileStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        biography.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let identity = NSStackView(views: [imageView, profileStack])
+        identity.orientation = .vertical
+        identity.alignment = .leading
+        identity.spacing = 14
 
         let eventsStat = stat(title: "Events", value: "\(events.count) saved")
         let mediaStat = stat(title: "Media storage", value: "\(mediaStats.fileCount) files · \(ByteCountFormatter.string(fromByteCount: Int64(mediaStats.byteCount), countStyle: .file))")
@@ -43,7 +62,7 @@ final class GeneralDashboardViewController: NSViewController {
         stats.alignment = .leading
         stats.spacing = 12
 
-        let content = NSStackView(views: [title, profileStack, NSBox(), stats])
+        let content = NSStackView(views: [title, identity, NSBox(), stats])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 20
@@ -64,8 +83,19 @@ final class GeneralDashboardViewController: NSViewController {
             content.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
             content.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
-            biography.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -84)
+            imageView.widthAnchor.constraint(equalToConstant: 72),
+            imageView.heightAnchor.constraint(equalToConstant: 72),
+            profileStack.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -84)
         ])
+
+        if let pictureURL = profile?.pictureURL {
+            Task { [weak imageView] in
+                guard let data = try? await URLSession.shared.data(from: pictureURL).0,
+                      let image = NSImage(data: data) else { return }
+                imageView?.image = image
+                imageView?.contentTintColor = nil
+            }
+        }
     }
 
     private func stat(title: String, value: String) -> NSStackView {
@@ -84,6 +114,26 @@ final class GeneralDashboardViewController: NSViewController {
     private func abbreviated(_ npub: String) -> String {
         guard npub.count > 16 else { return npub }
         return "\(npub.prefix(10))…\(npub.suffix(5))"
+    }
+}
+
+@MainActor
+private final class AspectFillImageView: NSImageView {
+    override func draw(_ dirtyRect: NSRect) {
+        guard let image, image.size.width > 0, image.size.height > 0 else {
+            super.draw(dirtyRect)
+            return
+        }
+
+        let scale = max(bounds.width / image.size.width, bounds.height / image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let rect = NSRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        image.draw(in: rect, from: NSRect(origin: .zero, size: image.size), operation: .sourceOver, fraction: 1, respectFlipped: isFlipped, hints: nil)
     }
 }
 
