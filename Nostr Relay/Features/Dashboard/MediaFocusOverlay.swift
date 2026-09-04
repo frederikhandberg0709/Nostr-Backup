@@ -21,9 +21,11 @@ final class MediaFocusOverlay: NSView {
     private var player: AVPlayer?
     private var zoomScale: CGFloat = 1
     private var panOffset = CGPoint.zero
+    private var rawPanOffset = CGPoint.zero
     private var dragStartOffset = CGPoint.zero
     private var baseMediaFrame = NSRect.zero
     private var zoomAnchor = CGPoint.zero
+    private var ignoresMomentumUntilNextGesture = false
 
     var reference: BlossomMediaReference { references[currentIndex] }
     var onSave: ((BlossomMediaReference) async -> Void)?
@@ -89,13 +91,26 @@ final class MediaFocusOverlay: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard zoomScale > 1 else { return }
+        if event.phase == .began { ignoresMomentumUntilNextGesture = false }
+        if ignoresMomentumUntilNextGesture, event.momentumPhase != [] { return }
+        if imageView.layer?.animation(forKey: "mediaRubberBandPosition") != nil {
+            stopPanAnimation()
+        }
         let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
         let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
-        panOffset = CGPoint(
-            x: min(max(panOffset.x + event.scrollingDeltaX, -maxX), maxX),
-            y: min(max(panOffset.y - event.scrollingDeltaY, -maxY), maxY)
-        )
+        let deltaLimit: CGFloat = event.hasPreciseScrollingDeltas ? 28 : 12
+        let deltaX = min(max(event.scrollingDeltaX, -deltaLimit), deltaLimit)
+        let deltaY = min(max(-event.scrollingDeltaY, -deltaLimit), deltaLimit)
+        rawPanOffset.x += deltaX
+        rawPanOffset.y += deltaY
+        rawPanOffset = limitedRawPan(rawPanOffset, maxX: maxX, maxY: maxY)
+        panOffset = rubberBanded(rawPanOffset, maxX: maxX, maxY: maxY)
+        logPan("scroll", input: CGPoint(x: deltaX, y: deltaY), maxX: maxX, maxY: maxY)
         applyTransform()
+        if event.phase == .ended || event.phase == .cancelled {
+            ignoresMomentumUntilNextGesture = true
+            snapPanToBounds()
+        }
     }
 
     func refresh() {
@@ -156,7 +171,7 @@ final class MediaFocusOverlay: NSView {
         imageView.layer?.cornerRadius = 12
         imageView.layer?.masksToBounds = true
         imageView.onClick = { [weak self] point in self?.toggleZoom(at: point) }
-        imageView.onDragStart = { [weak self] in self?.dragStartOffset = self?.panOffset ?? .zero }
+        imageView.onDragStart = { [weak self] in self?.dragStartOffset = self?.rawPanOffset ?? .zero }
         imageView.onDrag = { [weak self] offset in self?.pan(by: offset) }
         imageView.onDragEnd = { [weak self] offset in self?.handleSwipe(offset) }
         imageView.onMagnify = { [weak self] amount, point in self?.adjustZoom(by: amount, at: point) }
@@ -252,35 +267,158 @@ final class MediaFocusOverlay: NSView {
         zoomAnchor = convert(localPoint, from: imageView)
         zoomScale = zoomScale > 1 ? 1 : 2.5
         panOffset = .zero
+        rawPanOffset = .zero
         applyTransform()
     }
     private func adjustZoom(by amount: CGFloat, at localPoint: CGPoint) {
         zoomAnchor = convert(localPoint, from: imageView)
         zoomScale = min(max(zoomScale + amount, 1), 5)
-        if zoomScale == 1 { panOffset = .zero }
+        if zoomScale == 1 { panOffset = .zero; rawPanOffset = .zero }
         applyTransform()
     }
-    private func resetTransform() { zoomScale = 1; panOffset = .zero; applyTransform() }
+    private func resetTransform() { zoomScale = 1; panOffset = .zero; rawPanOffset = .zero; applyTransform() }
     private func pan(by offset: CGPoint) {
         guard zoomScale > 1 else { return }
         let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
         let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
-        panOffset = CGPoint(x: min(max(dragStartOffset.x + offset.x, -maxX), maxX), y: min(max(dragStartOffset.y + offset.y, -maxY), maxY))
+        rawPanOffset = limitedRawPan(
+            CGPoint(x: dragStartOffset.x + offset.x, y: dragStartOffset.y + offset.y),
+            maxX: maxX,
+            maxY: maxY
+        )
+        panOffset = rubberBanded(rawPanOffset, maxX: maxX, maxY: maxY)
+        logPan("drag", input: offset, maxX: maxX, maxY: maxY)
         applyTransform()
     }
+
+    private func rubberBanded(_ offset: CGPoint, maxX: CGFloat, maxY: CGFloat) -> CGPoint {
+        CGPoint(
+            x: rubberBand(offset.x, bound: maxX, dimension: baseMediaFrame.width),
+            y: rubberBand(offset.y, bound: maxY, dimension: baseMediaFrame.height)
+        )
+    }
+
+    private func rubberBand(_ value: CGFloat, bound: CGFloat, dimension: CGFloat) -> CGFloat {
+        let excess = max(0, abs(value) - bound)
+        guard excess > 0 else { return value }
+        let resistance: CGFloat = 0.65
+        let elasticLimit = elasticLimit(for: dimension)
+        let distance = (excess * elasticLimit * resistance) / (elasticLimit + excess * resistance)
+        return (value < 0 ? -1 : 1) * (bound + distance)
+    }
+
+    private func limitedRawPan(_ offset: CGPoint, maxX: CGFloat, maxY: CGFloat) -> CGPoint {
+        func limit(_ value: CGFloat, bound: CGFloat, dimension: CGFloat) -> CGFloat {
+            let elasticLimit = self.elasticLimit(for: dimension)
+            return min(max(value, -bound - elasticLimit * 8), bound + elasticLimit * 8)
+        }
+        return CGPoint(
+            x: limit(offset.x, bound: maxX, dimension: baseMediaFrame.width),
+            y: limit(offset.y, bound: maxY, dimension: baseMediaFrame.height)
+        )
+    }
+
+    private func elasticLimit(for dimension: CGFloat) -> CGFloat {
+        min(max(dimension * 0.35, 56), 160)
+    }
+
+    private func snapPanToBounds() {
+        let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
+        let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
+        let clamped = CGPoint(
+            x: min(max(rawPanOffset.x, -maxX), maxX),
+            y: min(max(rawPanOffset.y, -maxY), maxY)
+        )
+        guard clamped != rawPanOffset else { return }
+        NSLog(
+            "[MediaFocusPan] snap raw=(%.1f, %.1f) visual=(%.1f, %.1f) target=(%.1f, %.1f)",
+            rawPanOffset.x, rawPanOffset.y, panOffset.x, panOffset.y, clamped.x, clamped.y
+        )
+        rawPanOffset = clamped
+        panOffset = clamped
+        animateMediaFrame(to: transformedMediaFrame())
+    }
+
     private func applyTransform() {
         guard baseMediaFrame != .zero else { return }
+        imageView.layer?.setAffineTransform(.identity)
+        imageView.frame = transformedMediaFrame()
+    }
+
+    private func transformedMediaFrame() -> NSRect {
         let origin = CGPoint(
             x: baseMediaFrame.minX + (1 - zoomScale) * (zoomAnchor.x - baseMediaFrame.minX) + panOffset.x,
             y: baseMediaFrame.minY + (1 - zoomScale) * (zoomAnchor.y - baseMediaFrame.minY) + panOffset.y
         )
-        imageView.layer?.setAffineTransform(.identity)
-        imageView.frame = NSRect(
+        return NSRect(
             origin: origin,
             size: CGSize(width: baseMediaFrame.width * zoomScale, height: baseMediaFrame.height * zoomScale)
         )
     }
+
+    private func animateMediaFrame(to targetFrame: NSRect) {
+        guard let layer = imageView.layer else { applyTransform(); return }
+        let startPosition = layer.presentation()?.position ?? layer.position
+        let startBounds = layer.presentation()?.bounds ?? layer.bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        imageView.frame = targetFrame
+        CATransaction.commit()
+
+        let positionSpring = CASpringAnimation(keyPath: "position")
+        positionSpring.fromValue = startPosition
+        positionSpring.toValue = layer.position
+        positionSpring.mass = 1
+        positionSpring.stiffness = 230
+        positionSpring.damping = 19
+        positionSpring.duration = positionSpring.settlingDuration
+        layer.add(positionSpring, forKey: "mediaRubberBandPosition")
+
+        let boundsSpring = CASpringAnimation(keyPath: "bounds")
+        boundsSpring.fromValue = startBounds
+        boundsSpring.toValue = layer.bounds
+        boundsSpring.mass = positionSpring.mass
+        boundsSpring.stiffness = positionSpring.stiffness
+        boundsSpring.damping = positionSpring.damping
+        boundsSpring.duration = positionSpring.duration
+        layer.add(boundsSpring, forKey: "mediaRubberBandBounds")
+    }
+
+    private func stopPanAnimation() {
+        guard let layer = imageView.layer,
+              let presentation = layer.presentation() else { return }
+        let displayedFrame = presentation.frame
+        let scaleOrigin = CGPoint(
+            x: baseMediaFrame.minX + (1 - zoomScale) * (zoomAnchor.x - baseMediaFrame.minX),
+            y: baseMediaFrame.minY + (1 - zoomScale) * (zoomAnchor.y - baseMediaFrame.minY)
+        )
+        let displayedOffset = CGPoint(
+            x: displayedFrame.minX - scaleOrigin.x,
+            y: displayedFrame.minY - scaleOrigin.y
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.removeAnimation(forKey: "mediaRubberBandPosition")
+        layer.removeAnimation(forKey: "mediaRubberBandBounds")
+        imageView.frame = displayedFrame
+        CATransaction.commit()
+        panOffset = displayedOffset
+        rawPanOffset = displayedOffset
+    }
+
+    private func logPan(_ source: String, input: CGPoint, maxX: CGFloat, maxY: CGFloat) {
+        NSLog(
+            "[MediaFocusPan] %@ input=(%.1f, %.1f) raw=(%.1f, %.1f) visual=(%.1f, %.1f) bounds=(%.1f, %.1f) zoom=%.2f",
+            source,
+            input.x, input.y,
+            rawPanOffset.x, rawPanOffset.y,
+            panOffset.x, panOffset.y,
+            maxX, maxY,
+            zoomScale
+        )
+    }
     private func handleSwipe(_ offset: CGPoint) {
+        if zoomScale > 1 { snapPanToBounds() }
         if abs(offset.y) > 60, abs(offset.y) > abs(offset.x) { dismiss() }
         else if abs(offset.x) > 60, abs(offset.x) > abs(offset.y) { navigate(to: currentIndex + (offset.x < 0 ? 1 : -1)) }
     }
