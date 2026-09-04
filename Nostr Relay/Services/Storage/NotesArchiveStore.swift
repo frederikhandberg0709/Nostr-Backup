@@ -29,6 +29,25 @@ struct NotesArchiveStore {
         return destination
     }
 
+    func allEvents(for npub: String) throws -> [NostrEvent] {
+        let directory = try archiveDirectory()
+        let archiveURLs = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "json" }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var uniqueEvents: [String: NostrEvent] = [:]
+        for archiveURL in archiveURLs {
+            let data = try Data(contentsOf: archiveURL)
+            let archive = try decoder.decode(NotesArchive.self, from: data)
+            guard archive.npub == npub else { continue }
+            archive.events.forEach { uniqueEvents[$0.id] = $0 }
+        }
+        return Array(uniqueEvents.values)
+    }
+
     private func archiveDirectory() throws -> URL {
         let applicationSupport = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -63,13 +82,22 @@ struct NotesArchiveStore {
     }
 }
 
-private struct NotesArchive: Encodable {
-    let formatVersion = 1
+struct NotesArchive: Codable {
+    let formatVersion: Int
     let exportedAt: Date
     let npub: String
     let publicKey: String
     let relays: [String]
     let events: [NostrEvent]
+
+    init(exportedAt: Date, npub: String, publicKey: String, relays: [String], events: [NostrEvent]) {
+        formatVersion = 1
+        self.exportedAt = exportedAt
+        self.npub = npub
+        self.publicKey = publicKey
+        self.relays = relays
+        self.events = events
+    }
 
     enum CodingKeys: String, CodingKey {
         case formatVersion = "format_version"

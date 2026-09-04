@@ -3,6 +3,7 @@ import Cocoa
 @MainActor
 final class ImportViewController: NSViewController {
     var onImportNotes: ((String) -> Void)?
+    var onImportBlossom: ((String) -> Void)?
 
     private let npubField = NSTextField()
     private let notesButton = NSButton()
@@ -30,6 +31,17 @@ final class ImportViewController: NSViewController {
         }
     }
 
+    func setBlossomImporting(_ isImporting: Bool) {
+        notesButton.isEnabled = !isImporting
+        blossomButton.isEnabled = !isImporting
+        npubField.isEnabled = !isImporting
+
+        if isImporting {
+            statusLabel.stringValue = "Importing Blossom media…"
+            statusLabel.textColor = .secondaryLabelColor
+        }
+    }
+
     func showImportSucceeded(_ summary: NotesImportSummary) {
         profileView.configure(with: summary.profile, fallbackNpub: summary.npub)
         profileView.isHidden = false
@@ -40,6 +52,15 @@ final class ImportViewController: NSViewController {
     func showImportFailed(_ error: Error) {
         statusLabel.stringValue = error.localizedDescription
         statusLabel.textColor = .systemRed
+    }
+
+    func showBlossomImportSucceeded(_ summary: BlossomImportSummary) {
+        var message = "Media import complete: \(summary.downloadedCount) downloaded, \(summary.alreadyStoredCount) already stored."
+        if summary.failedCount > 0 {
+            message += " \(summary.failedCount) failed."
+        }
+        statusLabel.stringValue = message
+        statusLabel.textColor = summary.failedCount == 0 ? .secondaryLabelColor : .systemOrange
     }
 
     private func configureInterface() {
@@ -81,11 +102,9 @@ final class ImportViewController: NSViewController {
 
         configure(button: notesButton, title: "Import Notes", imageName: "note.text", action: #selector(importNotes(_:)))
         configure(button: blossomButton, title: "Import Blossom", imageName: "photo.on.rectangle", action: #selector(importBlossom(_:)))
-        blossomButton.isEnabled = false
-        blossomButton.toolTip = "Blossom import is coming next."
 
         let notesRow = importRow(button: notesButton, description: "Download and archive all events authored by this account")
-        let blossomRow = importRow(button: blossomButton, description: "Media import is coming next")
+        let blossomRow = importRow(button: blossomButton, description: "Archive media from supported Blossom hosts")
 
         profileView.isHidden = true
         statusLabel.font = .systemFont(ofSize: 12)
@@ -142,5 +161,14 @@ final class ImportViewController: NSViewController {
         onImportNotes?(npub)
     }
 
-    @objc private func importBlossom(_ sender: NSButton) {}
+    @objc private func importBlossom(_ sender: NSButton) {
+        let npub = npubField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !npub.isEmpty else {
+            statusLabel.stringValue = "Enter the npub whose media you want to import."
+            statusLabel.textColor = .systemRed
+            view.window?.makeFirstResponder(npubField)
+            return
+        }
+        onImportBlossom?(npub)
+    }
 }

@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @IBOutlet private var window: NSWindow!
 
     private let importCoordinator = NotesImportCoordinator()
+    private let blossomImportCoordinator = BlossomImportCoordinator()
     private var importViewController: ImportViewController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -14,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         importViewController = ImportViewController()
         importViewController.onImportNotes = { [weak self] npub in
             self?.importNotes(for: npub)
+        }
+        importViewController.onImportBlossom = { [weak self] npub in
+            self?.importBlossom(for: npub)
         }
         window.contentViewController = importViewController
     }
@@ -46,6 +50,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             importViewController.setImporting(false)
+        }
+    }
+
+    private func importBlossom(for npub: String) {
+        importViewController.setBlossomImporting(true)
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let summary = try await blossomImportCoordinator.importMedia(for: npub)
+                importViewController.showBlossomImportSucceeded(summary)
+            } catch {
+                importViewController.showImportFailed(error)
+            }
+
+            importViewController.setBlossomImporting(false)
         }
     }
 }
