@@ -23,8 +23,6 @@ final class GeneralDashboardViewController: NSViewController {
     private func buildInterface() {
         let profile = events.filter { $0.kind == 0 }.max { $0.createdAt < $1.createdAt }.flatMap(NostrProfile.init(event:))
         let mediaStats = BlossomMediaStore().storageStatistics()
-        let title = NSTextField(labelWithString: "General")
-        title.font = .systemFont(ofSize: 28, weight: .bold)
         let imageView = AspectFillImageView()
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.image = NSImage(systemSymbolName: "person.crop.circle.fill", accessibilityDescription: "Profile picture")
@@ -62,7 +60,7 @@ final class GeneralDashboardViewController: NSViewController {
         stats.alignment = .leading
         stats.spacing = 12
 
-        let content = NSStackView(views: [title, identity, NSBox(), stats])
+        let content = NSStackView(views: [identity, NSBox(), stats])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 20
@@ -143,11 +141,9 @@ final class MediaLibraryViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let title = NSTextField(labelWithString: "Media")
-        title.font = .systemFont(ofSize: 28, weight: .bold)
         let detail = NSTextField(labelWithString: "Your local media library will appear here.")
         detail.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [title, detail])
+        let stack = NSStackView(views: [detail])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8

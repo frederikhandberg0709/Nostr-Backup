@@ -43,16 +43,10 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         background.blendingMode = .behindWindow
         background.state = .active
 
-        let title = NSTextField(labelWithString: "Your local archive")
-        title.font = .systemFont(ofSize: 28, weight: .bold)
         let subtitle = NSTextField(labelWithString: "\(events.count) notes saved locally · \(abbreviated(npub))")
         subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = .secondaryLabelColor
-        let header = NSStackView(views: [title, subtitle])
-        header.orientation = .vertical
-        header.alignment = .leading
-        header.spacing = 4
-        header.translatesAutoresizingMaskIntoConstraints = false
+        subtitle.translatesAutoresizingMaskIntoConstraints = false
 
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
@@ -69,15 +63,15 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
 
-        background.addSubview(header)
+        background.addSubview(subtitle)
         background.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 42),
-            header.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -42),
-            header.topAnchor.constraint(equalTo: background.topAnchor, constant: 44),
-            scrollView.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 24),
+            subtitle.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 42),
+            subtitle.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -42),
+            subtitle.topAnchor.constraint(equalTo: background.topAnchor, constant: 30),
+            scrollView.leadingAnchor.constraint(equalTo: subtitle.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: subtitle.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 16),
             scrollView.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -24)
         ])
     }
