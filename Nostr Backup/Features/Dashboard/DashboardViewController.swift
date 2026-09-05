@@ -301,6 +301,44 @@ private final class ThumbnailButton: PayloadButton {
         let size = NSSize(width: thumbnail.size.width * scale, height: thumbnail.size.height * scale)
         thumbnailView.frame = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
     }
+
+    override func mouseDown(with event: NSEvent) {
+        guard thumbnail != nil else {
+            super.mouseDown(with: event)
+            return
+        }
+        animateThumbnail(to: 0.94, duration: 0.1)
+        super.mouseDown(with: event)
+        animateThumbnail(to: 1, duration: 0.16)
+    }
+
+    private func animateThumbnail(to scale: CGFloat, duration: CFTimeInterval) {
+        guard let layer = thumbnailView.layer else { return }
+        centerAnimationAnchor(for: layer)
+        let target = CATransform3DMakeScale(scale, scale, 1)
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = layer.presentation()?.transform ?? layer.transform
+        animation.toValue = target
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(animation, forKey: "thumbnailPressScale")
+        layer.transform = target
+    }
+
+    private func centerAnimationAnchor(for layer: CALayer) {
+        let center = CGPoint(x: 0.5, y: 0.5)
+        guard layer.anchorPoint != center else { return }
+        let oldAnchor = layer.anchorPoint
+        let position = layer.position
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.anchorPoint = center
+        layer.position = CGPoint(
+            x: position.x + (center.x - oldAnchor.x) * layer.bounds.width,
+            y: position.y + (center.y - oldAnchor.y) * layer.bounds.height
+        )
+        CATransaction.commit()
+    }
 }
 
 @MainActor
