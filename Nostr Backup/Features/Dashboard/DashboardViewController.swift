@@ -185,23 +185,15 @@ private final class TimelineNoteRowView: NSView {
             button.payload = url
             return button
         case let .image(reference):
-            let button = PayloadButton(
-                image: NSImage(systemSymbolName: "photo", accessibilityDescription: "Image") ?? NSImage(),
-                target: self,
-                action: #selector(openMedia(_:))
-            )
+            let button = ThumbnailButton(frame: .zero)
+            button.target = self
+            button.action = #selector(openMedia(_:))
             button.isBordered = false
-            button.imageScaling = .scaleProportionallyUpOrDown
             button.toolTip = "Open image"
             button.payload = reference
-            button.contentTintColor = .tertiaryLabelColor
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 7
-            button.layer?.masksToBounds = true
             ImageThumbnailCache.shared.thumbnail(for: reference) { [weak button] image in
                 guard let button, let image else { return }
-                button.image = image
-                button.contentTintColor = nil
+                button.thumbnail = image
             }
             return button
         }
@@ -265,8 +257,50 @@ private final class TimelineNoteRowView: NSView {
     }
 }
 
-private final class PayloadButton: NSButton {
+private class PayloadButton: NSButton {
     var payload: Any?
+}
+
+private final class ThumbnailButton: PayloadButton {
+    private let thumbnailView = NSImageView()
+
+    var thumbnail: NSImage? {
+        didSet {
+            thumbnailView.image = thumbnail
+            needsLayout = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title = ""
+        thumbnailView.imageScaling = .scaleProportionallyUpOrDown
+        thumbnailView.wantsLayer = true
+        thumbnailView.layer?.cornerRadius = 7
+        thumbnailView.layer?.masksToBounds = true
+        addSubview(thumbnailView)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        title = ""
+        thumbnailView.imageScaling = .scaleProportionallyUpOrDown
+        thumbnailView.wantsLayer = true
+        thumbnailView.layer?.cornerRadius = 7
+        thumbnailView.layer?.masksToBounds = true
+        addSubview(thumbnailView)
+    }
+
+    override func layout() {
+        super.layout()
+        guard let thumbnail, thumbnail.size.width > 0, thumbnail.size.height > 0 else {
+            thumbnailView.frame = .zero
+            return
+        }
+        let scale = min(bounds.width / thumbnail.size.width, bounds.height / thumbnail.size.height, 1)
+        let size = NSSize(width: thumbnail.size.width * scale, height: thumbnail.size.height * scale)
+        thumbnailView.frame = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
+    }
 }
 
 @MainActor
