@@ -59,6 +59,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.headerView = nil
         tableView.dataSource = self
         tableView.delegate = self
+        tableView.backgroundColor = .clear
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
@@ -69,8 +70,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
             subtitle.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 42),
             subtitle.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -42),
             subtitle.topAnchor.constraint(equalTo: background.topAnchor, constant: 30),
-            scrollView.leadingAnchor.constraint(equalTo: subtitle.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: subtitle.trailingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 16),
             scrollView.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -24)
         ])
