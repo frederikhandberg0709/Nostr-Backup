@@ -67,20 +67,32 @@ final class GeneralDashboardViewController: NSViewController {
         content.edgeInsets = NSEdgeInsets(top: 44, left: 42, bottom: 28, right: 42)
         content.translatesAutoresizingMaskIntoConstraints = false
 
+        // The scroll view aligns a document view that is shorter than its clip view
+        // to the bottom. Keep a document container at least viewport-height and pin
+        // the actual dashboard content to its top instead.
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(content)
+
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = content
+        scrollView.documentView = document
         view.addSubview(scrollView)
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
-            content.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            document.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            document.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
+            content.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            content.topAnchor.constraint(equalTo: document.topAnchor),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor),
             imageView.widthAnchor.constraint(equalToConstant: 72),
             imageView.heightAnchor.constraint(equalToConstant: 72),
             profileStack.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -84)
