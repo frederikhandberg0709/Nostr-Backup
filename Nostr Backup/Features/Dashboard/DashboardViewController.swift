@@ -60,6 +60,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.dataSource = self
         tableView.delegate = self
         tableView.backgroundColor = .clear
+        tableView.intercellSpacing = NSSize(width: 0, height: 8)
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
