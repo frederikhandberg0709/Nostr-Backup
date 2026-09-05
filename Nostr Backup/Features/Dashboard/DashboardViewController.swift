@@ -1,4 +1,5 @@
 import Cocoa
+import ImageIO
 
 @MainActor
 final class DashboardViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
@@ -105,7 +106,7 @@ private final class TimelineNoteRowView: NSView {
     private enum ContentItem {
         case text(String)
         case link(String)
-        case image(NSImage, BlossomMediaReference)
+        case image(BlossomMediaReference)
     }
 
     private let event: NostrEvent
@@ -183,15 +184,25 @@ private final class TimelineNoteRowView: NSView {
             button.toolTip = url
             button.payload = url
             return button
-        case let .image(image, reference):
-            let button = PayloadButton(image: image, target: self, action: #selector(openMedia(_:)))
+        case let .image(reference):
+            let button = PayloadButton(
+                image: NSImage(systemSymbolName: "photo", accessibilityDescription: "Image") ?? NSImage(),
+                target: self,
+                action: #selector(openMedia(_:))
+            )
             button.isBordered = false
             button.imageScaling = .scaleProportionallyUpOrDown
             button.toolTip = "Open image"
             button.payload = reference
+            button.contentTintColor = .tertiaryLabelColor
             button.wantsLayer = true
             button.layer?.cornerRadius = 7
             button.layer?.masksToBounds = true
+            ImageThumbnailCache.shared.thumbnail(for: reference) { [weak button] image in
+                guard let button, let image else { return }
+                button.image = image
+                button.contentTintColor = nil
+            }
             return button
         }
     }
@@ -212,8 +223,8 @@ private final class TimelineNoteRowView: NSView {
             let url = String(event.content[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
             if let reference = references[url],
                let localURL = try? BlossomMediaStore().localURL(for: reference.hash),
-               let image = NSImage(contentsOf: localURL) {
-                items.append(.image(image, reference))
+               !isVideo(localURL) {
+                items.append(.image(reference))
             } else {
                 items.append(.link(url))
             }
@@ -234,12 +245,13 @@ private final class TimelineNoteRowView: NSView {
             return NSSize(width: availableWidth, height: ceil(textHeight(text, width: availableWidth)))
         case .link:
             return NSSize(width: availableWidth, height: 22)
-        case let .image(image, _):
-            let maximum = NSSize(width: min(240, availableWidth), height: 160)
-            let source = image.size.width > 0 && image.size.height > 0 ? image.size : NSSize(width: 4, height: 3)
-            let scale = min(maximum.width / source.width, maximum.height / source.height, 1)
-            return NSSize(width: max(1, floor(source.width * scale)), height: max(1, floor(source.height * scale)))
+        case .image:
+            return NSSize(width: min(240, availableWidth), height: 160)
         }
+    }
+
+    private static func isVideo(_ url: URL) -> Bool {
+        ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
 
     @objc private func openMedia(_ sender: NSButton) {
@@ -255,4 +267,79 @@ private final class TimelineNoteRowView: NSView {
 
 private final class PayloadButton: NSButton {
     var payload: Any?
+}
+
+@MainActor
+private final class ImageThumbnailCache {
+    static let shared = ImageThumbnailCache()
+
+    private let cache = NSCache<NSString, NSImage>()
+    private var pending: [String: [(NSImage?) -> Void]] = [:]
+    private var failedHashes = Set<String>()
+    private var queued: [(hash: String, url: URL)] = []
+    private var activeLoads = 0
+
+    private init() {
+        cache.countLimit = 200
+    }
+
+    func thumbnail(for reference: BlossomMediaReference, completion: @escaping (NSImage?) -> Void) {
+        let key = reference.hash as NSString
+        if let image = cache.object(forKey: key) {
+            completion(image)
+            return
+        }
+        if failedHashes.contains(reference.hash) {
+            completion(nil)
+            return
+        }
+
+        pending[reference.hash, default: []].append(completion)
+        guard pending[reference.hash]?.count == 1 else { return }
+        guard let url = try? BlossomMediaStore().localURL(for: reference.hash) else {
+            finish(nil, for: reference.hash)
+            return
+        }
+        queued.append((reference.hash, url))
+        startNextLoad()
+    }
+
+    private func finish(_ image: NSImage?, for hash: String) {
+        if let image {
+            cache.setObject(image, forKey: hash as NSString)
+        } else {
+            failedHashes.insert(hash)
+        }
+        let completions = pending.removeValue(forKey: hash) ?? []
+        completions.forEach { $0(image) }
+    }
+
+    private func startNextLoad() {
+        guard activeLoads < 2, !queued.isEmpty else { return }
+        let item = queued.removeFirst()
+        activeLoads += 1
+        Task.detached(priority: .utility) {
+            let image = Self.makeThumbnail(from: item.url)
+            await MainActor.run {
+                ImageThumbnailCache.shared.activeLoads -= 1
+                ImageThumbnailCache.shared.finish(image, for: item.hash)
+                ImageThumbnailCache.shared.startNextLoad()
+            }
+        }
+        startNextLoad()
+    }
+
+    nonisolated private static func makeThumbnail(from url: URL) -> NSImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 480,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: image, size: NSSize(width: image.width / 2, height: image.height / 2))
+    }
 }
