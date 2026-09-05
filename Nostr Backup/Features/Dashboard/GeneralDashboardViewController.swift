@@ -149,13 +149,21 @@ private final class AspectFillImageView: NSImageView {
 
 @MainActor
 final class MediaLibraryViewController: NSViewController {
+    var onImportBlossom: (() async throws -> BlossomImportSummary)?
+
+    private let blossomButton = NSButton()
+    private let statusLabel = NSTextField(labelWithString: "")
+
     override func loadView() { view = NSVisualEffectView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         let detail = NSTextField(labelWithString: "Your local media library will appear here.")
         detail.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [detail])
+        configure(button: blossomButton, title: "Import Blossom", imageName: "photo.on.rectangle", action: #selector(importBlossom(_:)))
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [detail, blossomButton, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -165,5 +173,35 @@ final class MediaLibraryViewController: NSViewController {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 42),
             stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 44)
         ])
+    }
+
+    private func configure(button: NSButton, title: String, imageName: String, action: Selector) {
+        button.title = title
+        button.target = self
+        button.action = action
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: imageName, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.controlSize = .large
+        button.font = .systemFont(ofSize: 14, weight: .semibold)
+    }
+
+    @objc private func importBlossom(_ sender: NSButton) {
+        guard let onImportBlossom else { return }
+        blossomButton.isEnabled = false
+        statusLabel.stringValue = "Importing Blossom media…"
+        statusLabel.textColor = .secondaryLabelColor
+
+        Task { [weak self] in
+            do {
+                let summary = try await onImportBlossom()
+                self?.statusLabel.stringValue = "Media import complete: \(summary.downloadedCount) downloaded, \(summary.alreadyStoredCount) already stored."
+                self?.statusLabel.textColor = summary.failedCount == 0 ? .secondaryLabelColor : .systemOrange
+            } catch {
+                self?.statusLabel.stringValue = error.localizedDescription
+                self?.statusLabel.textColor = .systemRed
+            }
+            self?.blossomButton.isEnabled = true
+        }
     }
 }

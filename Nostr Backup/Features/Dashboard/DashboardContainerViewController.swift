@@ -7,9 +7,14 @@ final class DashboardContainerViewController: NSViewController {
     private let contentContainer = NSView()
     private var currentContent: NSViewController?
     private var notesViewController: DashboardViewController?
+    private var mediaViewController: MediaLibraryViewController?
 
     var onSaveMedia: ((BlossomMediaReference) async throws -> Bool)? {
         didSet { notesViewController?.onSaveMedia = onSaveMedia }
+    }
+
+    var onImportBlossom: (() async throws -> BlossomImportSummary)? {
+        didSet { mediaViewController?.onImportBlossom = onImportBlossom }
     }
 
     init(npub: String, events: [NostrEvent]) {
@@ -78,7 +83,10 @@ final class DashboardContainerViewController: NSViewController {
             notesViewController = notes
             content = notes
         case .media:
-            content = MediaLibraryViewController()
+            let media = MediaLibraryViewController()
+            media.onImportBlossom = onImportBlossom
+            mediaViewController = media
+            content = media
         }
 
         addChild(content)

@@ -32,7 +32,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
-        let rowView = TimelineNoteRowView(event: event, media: BlossomMediaReference.find(in: [event]).first)
+        let rowView = TimelineNoteRowView(event: event)
         rowView.onOpenMedia = { [weak self] reference in self?.openMedia(reference) }
         return rowView
     }
@@ -102,18 +102,23 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
 @MainActor
 private final class TimelineNoteRowView: NSView {
+    private enum ContentItem {
+        case text(String)
+        case link(String)
+        case image(NSImage, BlossomMediaReference)
+    }
+
     private let event: NostrEvent
-    private let media: BlossomMediaReference?
+    private let items: [ContentItem]
     private let dateLabel = NSTextField(labelWithString: "")
-    private let contentLabel = NSTextField(wrappingLabelWithString: "")
     private let savedLabel = NSTextField(labelWithString: "Saved locally")
-    private let mediaButton = NSButton()
+    private var contentViews: [NSView] = []
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
-    init(event: NostrEvent, media: BlossomMediaReference?) {
+    init(event: NostrEvent) {
         self.event = event
-        self.media = media
+        items = Self.contentItems(for: event)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 12
@@ -122,21 +127,11 @@ private final class TimelineNoteRowView: NSView {
         dateLabel.stringValue = Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .shortened)
         dateLabel.font = .systemFont(ofSize: 12)
         dateLabel.textColor = .secondaryLabelColor
-        contentLabel.stringValue = event.content
-        contentLabel.font = .systemFont(ofSize: 15)
         savedLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         savedLabel.textColor = .systemGreen
-        [dateLabel, contentLabel, savedLabel].forEach(addSubview)
-
-        if media != nil {
-            mediaButton.title = "Open media"
-            mediaButton.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
-            mediaButton.imagePosition = .imageLeading
-            mediaButton.target = self
-            mediaButton.action = #selector(openMedia(_:))
-            mediaButton.bezelStyle = .rounded
-            addSubview(mediaButton)
-        }
+        [dateLabel, savedLabel].forEach(addSubview)
+        contentViews = items.map(makeContentView)
+        contentViews.forEach(addSubview)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -148,29 +143,116 @@ private final class TimelineNoteRowView: NSView {
         dateLabel.frame = NSRect(x: inset, y: bounds.height - 31, width: 240, height: 16)
         savedLabel.sizeToFit()
         savedLabel.frame.origin = NSPoint(x: bounds.width - inset - savedLabel.frame.width, y: bounds.height - 31)
-        let contentHeight = Self.textHeight(event.content, width: contentWidth)
-        let buttonHeight: CGFloat = media == nil ? 0 : 30
-        contentLabel.frame = NSRect(x: inset, y: inset + buttonHeight, width: contentWidth, height: contentHeight)
-        if media != nil {
-            mediaButton.frame = NSRect(x: inset, y: inset, width: 112, height: 28)
+
+        var y: CGFloat = inset
+        for (item, contentView) in zip(items, contentViews).reversed() {
+            let size = Self.size(for: item, availableWidth: contentWidth)
+            contentView.frame = NSRect(x: inset, y: y, width: size.width, height: size.height)
+            y += size.height + 8
         }
     }
 
     static func height(for event: NostrEvent, width: CGFloat) -> CGFloat {
         let contentWidth = max(width - 32, 1)
-        return ceil(textHeight(event.content, width: contentWidth)) + (BlossomMediaReference.find(in: [event]).isEmpty ? 0 : 34) + 52
+        let items = contentItems(for: event)
+        let contentHeight = items.reduce(CGFloat.zero) { $0 + size(for: $1, availableWidth: contentWidth).height } + CGFloat(max(items.count - 1, 0) * 8)
+        return ceil(contentHeight) + 68
     }
 
-    private static func textHeight(_ text: String, width: CGFloat) -> CGFloat {
+    private static func textHeight(_ text: String, width: CGFloat, font: NSFont = .systemFont(ofSize: 15)) -> CGFloat {
         (text as NSString).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: NSFont.systemFont(ofSize: 15)]
+            attributes: [.font: font]
         ).height
     }
 
-    @objc private func openMedia(_ sender: NSButton) {
-        guard let media else { return }
-        onOpenMedia?(media)
+    private func makeContentView(for item: ContentItem) -> NSView {
+        switch item {
+        case let .text(text):
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = .systemFont(ofSize: 15)
+            return label
+        case let .link(url):
+            let button = PayloadButton(title: url, target: self, action: #selector(openLink(_:)))
+            button.isBordered = false
+            button.bezelStyle = .inline
+            button.contentTintColor = .linkColor
+            button.alignment = .left
+            button.lineBreakMode = .byTruncatingMiddle
+            button.toolTip = url
+            button.payload = url
+            return button
+        case let .image(image, reference):
+            let button = PayloadButton(image: image, target: self, action: #selector(openMedia(_:)))
+            button.isBordered = false
+            button.imageScaling = .scaleProportionallyUpOrDown
+            button.toolTip = "Open image"
+            button.payload = reference
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 7
+            button.layer?.masksToBounds = true
+            return button
+        }
     }
+
+    private static func contentItems(for event: NostrEvent) -> [ContentItem] {
+        let references = Dictionary(uniqueKeysWithValues: BlossomMediaReference.find(in: [event]).map { ($0.sourceURL.absoluteString, $0) })
+        let pattern = #"https?://[^\s\"'<>]+"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [.text(event.content)] }
+        let range = NSRange(event.content.startIndex..., in: event.content)
+        var items: [ContentItem] = []
+        var cursor = event.content.startIndex
+
+        for match in expression.matches(in: event.content, range: range) {
+            guard let matchRange = Range(match.range, in: event.content) else { continue }
+            if cursor < matchRange.lowerBound {
+                items.append(.text(String(event.content[cursor..<matchRange.lowerBound])))
+            }
+            let url = String(event.content[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
+            if let reference = references[url],
+               let localURL = try? BlossomMediaStore().localURL(for: reference.hash),
+               let image = NSImage(contentsOf: localURL) {
+                items.append(.image(image, reference))
+            } else {
+                items.append(.link(url))
+            }
+            cursor = matchRange.upperBound
+        }
+        if cursor < event.content.endIndex {
+            items.append(.text(String(event.content[cursor...])))
+        }
+        return items.filter {
+            if case let .text(text) = $0 { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            return true
+        }
+    }
+
+    private static func size(for item: ContentItem, availableWidth: CGFloat) -> NSSize {
+        switch item {
+        case let .text(text):
+            return NSSize(width: availableWidth, height: ceil(textHeight(text, width: availableWidth)))
+        case .link:
+            return NSSize(width: availableWidth, height: 22)
+        case let .image(image, _):
+            let maximum = NSSize(width: min(240, availableWidth), height: 160)
+            let source = image.size.width > 0 && image.size.height > 0 ? image.size : NSSize(width: 4, height: 3)
+            let scale = min(maximum.width / source.width, maximum.height / source.height, 1)
+            return NSSize(width: max(1, floor(source.width * scale)), height: max(1, floor(source.height * scale)))
+        }
+    }
+
+    @objc private func openMedia(_ sender: NSButton) {
+        guard let reference = (sender as? PayloadButton)?.payload as? BlossomMediaReference else { return }
+        onOpenMedia?(reference)
+    }
+
+    @objc private func openLink(_ sender: NSButton) {
+        guard let string = (sender as? PayloadButton)?.payload as? String, let url = URL(string: string) else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+private final class PayloadButton: NSButton {
+    var payload: Any?
 }

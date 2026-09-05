@@ -85,6 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dashboard.onSaveMedia = { [blossomImportCoordinator] reference in
             try await blossomImportCoordinator.saveMedia(reference)
         }
+        dashboard.onImportBlossom = { [blossomImportCoordinator] in
+            try await blossomImportCoordinator.importMedia(for: npub)
+        }
         window.contentViewController = dashboard
     }
 }
