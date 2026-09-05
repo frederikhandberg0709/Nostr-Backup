@@ -42,6 +42,9 @@ final class MediaFocusOverlay: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.86).cgColor
+        // Zoomed media is allowed to extend beyond its stage, but never beyond
+        // this dashboard-content overlay into the sidebar or window chrome.
+        layer?.masksToBounds = true
         configureInterface()
         refresh()
     }
