@@ -28,6 +28,7 @@ final class MediaFocusOverlay: NSView {
     private var ignoresMomentumUntilNextGesture = false
     private var zoomSnapshotLayer: CALayer?
     private var zoomAnimationDelegate: LayerAnimationDelegate?
+    private var videoMediaSize = CGSize(width: 16, height: 9)
 
     var reference: BlossomMediaReference { references[currentIndex] }
     var onSave: ((BlossomMediaReference) async -> Void)?
@@ -126,6 +127,7 @@ final class MediaFocusOverlay: NSView {
         player?.pause()
         player = nil
         playerView.player = nil
+        videoMediaSize = CGSize(width: 16, height: 9)
 
         guard let url = try? mediaStore.localURL(for: reference.hash) else {
             playerView.isHidden = true
@@ -145,10 +147,12 @@ final class MediaFocusOverlay: NSView {
         if Self.isVideo(url) {
             imageView.isHidden = true
             playerView.isHidden = false
-            let player = AVPlayer(url: url)
+            let asset = AVURLAsset(url: url)
+            let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             self.player = player
             playerView.player = player
             player.play()
+            loadVideoMediaSize(from: asset, for: reference)
         } else {
             playerView.isHidden = true
             imageView.isHidden = false
@@ -244,9 +248,24 @@ final class MediaFocusOverlay: NSView {
     }
 
     private var mediaSize: CGSize {
-        if !playerView.isHidden { return CGSize(width: 16, height: 9) }
+        if !playerView.isHidden { return videoMediaSize }
         if let size = imageView.image?.size, size.width > 0, size.height > 0 { return size }
         return CGSize(width: 4, height: 3)
+    }
+
+    private func loadVideoMediaSize(from asset: AVAsset, for reference: BlossomMediaReference) {
+        Task { [weak self] in
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let naturalSize = try? await track.load(.naturalSize),
+                  let transform = try? await track.load(.preferredTransform) else { return }
+            let presentationSize = naturalSize.applying(transform)
+            let size = CGSize(width: abs(presentationSize.width), height: abs(presentationSize.height))
+            guard size.width > 0, size.height > 0,
+                  self?.reference == reference,
+                  self?.playerView.isHidden == false else { return }
+            self?.videoMediaSize = size
+            self?.layoutMedia()
+        }
     }
 
     private func configureNavigationButton(_ button: NSButton, symbol: String, action: Selector) {
