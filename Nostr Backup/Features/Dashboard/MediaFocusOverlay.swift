@@ -96,8 +96,8 @@ final class MediaFocusOverlay: NSView {
         guard zoomScale > 1 else { return }
         if event.phase == .began { ignoresMomentumUntilNextGesture = false }
         if ignoresMomentumUntilNextGesture, event.momentumPhase != [] { return }
-        if imageView.layer?.animation(forKey: "mediaRubberBandPosition") != nil {
-            stopPanAnimation()
+        if imageView.layer?.animation(forKey: "mediaFramePosition") != nil {
+            stopMediaFrameAnimation()
         }
         let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
         let maxY = baseMediaFrame.height * (zoomScale - 1) / 2
@@ -271,7 +271,7 @@ final class MediaFocusOverlay: NSView {
         zoomScale = zoomScale > 1 ? 1 : 2.5
         panOffset = .zero
         rawPanOffset = .zero
-        applyTransform()
+        animateMediaFrame(to: transformedMediaFrame())
     }
     private func adjustZoom(by amount: CGFloat, at localPoint: CGPoint) {
         zoomAnchor = convert(localPoint, from: imageView)
@@ -365,6 +365,8 @@ final class MediaFocusOverlay: NSView {
         let startBounds = layer.presentation()?.bounds ?? layer.bounds
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        layer.removeAnimation(forKey: "mediaFramePosition")
+        layer.removeAnimation(forKey: "mediaFrameBounds")
         imageView.frame = targetFrame
         CATransaction.commit()
 
@@ -372,10 +374,10 @@ final class MediaFocusOverlay: NSView {
         positionSpring.fromValue = startPosition
         positionSpring.toValue = layer.position
         positionSpring.mass = 1
-        positionSpring.stiffness = 230
-        positionSpring.damping = 19
+        positionSpring.stiffness = 260
+        positionSpring.damping = 21
         positionSpring.duration = positionSpring.settlingDuration
-        layer.add(positionSpring, forKey: "mediaRubberBandPosition")
+        layer.add(positionSpring, forKey: "mediaFramePosition")
 
         let boundsSpring = CASpringAnimation(keyPath: "bounds")
         boundsSpring.fromValue = startBounds
@@ -384,10 +386,10 @@ final class MediaFocusOverlay: NSView {
         boundsSpring.stiffness = positionSpring.stiffness
         boundsSpring.damping = positionSpring.damping
         boundsSpring.duration = positionSpring.duration
-        layer.add(boundsSpring, forKey: "mediaRubberBandBounds")
+        layer.add(boundsSpring, forKey: "mediaFrameBounds")
     }
 
-    private func stopPanAnimation() {
+    private func stopMediaFrameAnimation() {
         guard let layer = imageView.layer,
               let presentation = layer.presentation() else { return }
         let displayedFrame = presentation.frame
@@ -401,8 +403,8 @@ final class MediaFocusOverlay: NSView {
         )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.removeAnimation(forKey: "mediaRubberBandPosition")
-        layer.removeAnimation(forKey: "mediaRubberBandBounds")
+        layer.removeAnimation(forKey: "mediaFramePosition")
+        layer.removeAnimation(forKey: "mediaFrameBounds")
         imageView.frame = displayedFrame
         CATransaction.commit()
         panOffset = displayedOffset

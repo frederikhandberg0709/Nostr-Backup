@@ -11,7 +11,12 @@ final class NotesImportCoordinator {
 
     func importNotes(for npub: String) async throws -> NotesImportSummary {
         let publicKey = try NpubDecoder.publicKey(from: npub)
-        let events = try await relayClient.fetchAuthoredEvents(publicKey: publicKey)
+        let authoredEvents = try await relayClient.fetchAuthoredEvents(publicKey: publicKey)
+        let linkedEventIDs = Self.linkedEventIDs(in: authoredEvents)
+        let linkedEvents = await relayClient.fetchReferencedEvents(eventIDs: Array(linkedEventIDs))
+        var eventsByID = Dictionary(uniqueKeysWithValues: authoredEvents.map { ($0.id, $0) })
+        linkedEvents.forEach { eventsByID[$0.id] = $0 }
+        let events = Array(eventsByID.values)
         let archiveURL = try archiveStore.save(
             npub: npub,
             publicKey: publicKey,
@@ -29,5 +34,22 @@ final class NotesImportCoordinator {
             archiveURL: archiveURL,
             profile: profile
         )
+    }
+
+    private static func linkedEventIDs(in events: [NostrEvent]) -> Set<String> {
+        let pattern = #"nostr:nevent1[023456789acdefghjklmnpqrstuvwxyz]+"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        var eventIDs = Set<String>()
+        for event in events {
+            let range = NSRange(event.content.startIndex..., in: event.content)
+            for match in expression.matches(in: event.content, range: range) {
+                guard let range = Range(match.range, in: event.content) else { continue }
+                if let eventID = NeventDecoder.eventID(from: String(event.content[range])) {
+                    eventIDs.insert(eventID)
+                }
+            }
+        }
+        return eventIDs
     }
 }

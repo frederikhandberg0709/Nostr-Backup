@@ -5,6 +5,7 @@ import ImageIO
 final class DashboardViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let npub: String
     private let events: [NostrEvent]
+    private let linkedNotesByID: [String: NostrEvent]
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
 
@@ -12,7 +13,12 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
     init(npub: String, events: [NostrEvent]) {
         self.npub = npub
-        self.events = events.filter { $0.kind == 1 }.sorted { $0.createdAt > $1.createdAt }
+        if let publicKey = try? NpubDecoder.publicKey(from: npub) {
+            self.events = events.filter { $0.kind == 1 && $0.pubkey == publicKey }.sorted { $0.createdAt > $1.createdAt }
+        } else {
+            self.events = events.filter { $0.kind == 1 }.sorted { $0.createdAt > $1.createdAt }
+        }
+        linkedNotesByID = Dictionary(uniqueKeysWithValues: events.filter { $0.kind == 1 }.map { ($0.id, $0) })
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -28,12 +34,12 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     func numberOfRows(in tableView: NSTableView) -> Int { events.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        TimelineNoteRowView.height(for: events[row], width: max(tableView.bounds.width, 520))
+        TimelineNoteRowView.height(for: events[row], width: max(tableView.bounds.width, 520), linkedNotesByID: linkedNotesByID)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
-        let rowView = TimelineNoteRowView(event: event)
+        let rowView = TimelineNoteRowView(event: event, linkedNotesByID: linkedNotesByID)
         rowView.onOpenMedia = { [weak self] reference in self?.openMedia(reference) }
         return rowView
     }
@@ -107,6 +113,7 @@ private final class TimelineNoteRowView: NSView {
         case text(String)
         case link(String)
         case image(BlossomMediaReference)
+        case embeddedNote(NostrEvent)
     }
 
     private let event: NostrEvent
@@ -117,9 +124,9 @@ private final class TimelineNoteRowView: NSView {
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
-    init(event: NostrEvent) {
+    init(event: NostrEvent, linkedNotesByID: [String: NostrEvent]) {
         self.event = event
-        items = Self.contentItems(for: event)
+        items = Self.contentItems(for: event, linkedNotesByID: linkedNotesByID)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 12
@@ -153,9 +160,9 @@ private final class TimelineNoteRowView: NSView {
         }
     }
 
-    static func height(for event: NostrEvent, width: CGFloat) -> CGFloat {
+    static func height(for event: NostrEvent, width: CGFloat, linkedNotesByID: [String: NostrEvent]) -> CGFloat {
         let contentWidth = max(width - 32, 1)
-        let items = contentItems(for: event)
+        let items = contentItems(for: event, linkedNotesByID: linkedNotesByID)
         let contentHeight = items.reduce(CGFloat.zero) { $0 + size(for: $1, availableWidth: contentWidth).height } + CGFloat(max(items.count - 1, 0) * 8)
         return ceil(contentHeight) + 68
     }
@@ -196,12 +203,14 @@ private final class TimelineNoteRowView: NSView {
                 button.thumbnail = image
             }
             return button
+        case let .embeddedNote(note):
+            return EmbeddedNoteCard(event: note)
         }
     }
 
-    private static func contentItems(for event: NostrEvent) -> [ContentItem] {
+    private static func contentItems(for event: NostrEvent, linkedNotesByID: [String: NostrEvent]) -> [ContentItem] {
         let references = Dictionary(uniqueKeysWithValues: BlossomMediaReference.find(in: [event]).map { ($0.sourceURL.absoluteString, $0) })
-        let pattern = #"https?://[^\s\"'<>]+"#
+        let pattern = #"(?:https?://[^\s\"'<>]+|nostr:nevent1[023456789acdefghjklmnpqrstuvwxyz]+)"#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [.text(event.content)] }
         let range = NSRange(event.content.startIndex..., in: event.content)
         var items: [ContentItem] = []
@@ -212,8 +221,13 @@ private final class TimelineNoteRowView: NSView {
             if cursor < matchRange.lowerBound {
                 items.append(.text(String(event.content[cursor..<matchRange.lowerBound])))
             }
-            let url = String(event.content[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
-            if let reference = references[url],
+            let referenceText = String(event.content[matchRange])
+            let url = referenceText.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
+            if referenceText.hasPrefix("nostr:nevent"),
+               let eventID = NeventDecoder.eventID(from: referenceText),
+               let linkedNote = linkedNotesByID[eventID] {
+                items.append(.embeddedNote(linkedNote))
+            } else if let reference = references[url],
                let localURL = try? BlossomMediaStore().localURL(for: reference.hash),
                !isVideo(localURL) {
                 items.append(.image(reference))
@@ -239,6 +253,8 @@ private final class TimelineNoteRowView: NSView {
             return NSSize(width: availableWidth, height: 22)
         case .image:
             return NSSize(width: min(240, availableWidth), height: 160)
+        case let .embeddedNote(note):
+            return NSSize(width: availableWidth, height: EmbeddedNoteCard.height(for: note, width: availableWidth))
         }
     }
 
@@ -254,6 +270,57 @@ private final class TimelineNoteRowView: NSView {
     @objc private func openLink(_ sender: NSButton) {
         guard let string = (sender as? PayloadButton)?.payload as? String, let url = URL(string: string) else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+@MainActor
+private final class EmbeddedNoteCard: NSView {
+    private let event: NostrEvent
+    private let titleLabel = NSTextField(labelWithString: "Linked note")
+    private let metadataLabel = NSTextField(labelWithString: "")
+    private let bodyLabel: NSTextField
+
+    init(event: NostrEvent) {
+        self.event = event
+        bodyLabel = NSTextField(wrappingLabelWithString: event.content)
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 9
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.82).cgColor
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        metadataLabel.stringValue = "(Self.abbreviated(event.pubkey)) · \(Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .omitted))"
+        metadataLabel.font = .systemFont(ofSize: 12)
+        metadataLabel.textColor = .tertiaryLabelColor
+        metadataLabel.alignment = .right
+        bodyLabel.font = .systemFont(ofSize: 14)
+        bodyLabel.lineBreakMode = .byTruncatingTail
+        [titleLabel, metadataLabel, bodyLabel].forEach(addSubview)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = 12
+        titleLabel.frame = NSRect(x: inset, y: bounds.height - 29, width: 100, height: 16)
+        metadataLabel.frame = NSRect(x: 116, y: bounds.height - 29, width: max(1, bounds.width - 128), height: 16)
+        bodyLabel.frame = NSRect(x: inset, y: 11, width: max(1, bounds.width - inset * 2), height: max(1, bounds.height - 47))
+    }
+
+    static func height(for event: NostrEvent, width: CGFloat) -> CGFloat {
+        let bodyHeight = (event.content as NSString).boundingRect(
+            with: NSSize(width: max(1, width - 24), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.systemFont(ofSize: 14)]
+        ).height
+        return ceil(min(bodyHeight, 100)) + 47
+    }
+
+    private static func abbreviated(_ publicKey: String) -> String {
+        guard publicKey.count > 16 else { return publicKey }
+        return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
     }
 }
 

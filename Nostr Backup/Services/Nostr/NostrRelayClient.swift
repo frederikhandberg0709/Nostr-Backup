@@ -30,12 +30,30 @@ struct NostrRelayClient {
         return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// Linked notes are fetched separately so an unavailable quoted event never
+    /// prevents an otherwise valid personal backup from completing.
+    func fetchReferencedEvents(eventIDs: [String]) async -> [NostrEvent] {
+        guard !eventIDs.isEmpty else { return [] }
+        var uniqueEvents: [String: NostrEvent] = [:]
+
+        for relayURL in relayURLs {
+            guard let events = try? await fetchPage(
+                from: relayURL,
+                filter: ["ids": eventIDs, "limit": eventIDs.count]
+            ) else { continue }
+            events.forEach { uniqueEvents[$0.id] = $0 }
+        }
+        return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
+    }
+
     private func fetchAllEvents(from relayURL: URL, publicKey: String) async throws -> [NostrEvent] {
         var allEvents: [NostrEvent] = []
         var until: Int?
 
         while true {
-            let page = try await fetchPage(from: relayURL, publicKey: publicKey, until: until)
+            var filter: [String: Any] = ["authors": [publicKey], "limit": pageSize]
+            if let until { filter["until"] = until }
+            let page = try await fetchPage(from: relayURL, filter: filter)
             allEvents.append(contentsOf: page)
 
             guard page.count == pageSize, let oldestEvent = page.min(by: { $0.createdAt < $1.createdAt }) else {
@@ -48,7 +66,7 @@ struct NostrRelayClient {
         }
     }
 
-    private func fetchPage(from relayURL: URL, publicKey: String, until: Int?) async throws -> [NostrEvent] {
+    private func fetchPage(from relayURL: URL, filter: [String: Any]) async throws -> [NostrEvent] {
         let task = URLSession.shared.webSocketTask(with: relayURL)
         task.resume()
 
@@ -62,13 +80,6 @@ struct NostrRelayClient {
         }
 
         let subscriptionID = UUID().uuidString
-        var filter: [String: Any] = [
-            "authors": [publicKey],
-            "limit": pageSize
-        ]
-        if let until {
-            filter["until"] = until
-        }
         let request: [Any] = [
             "REQ",
             subscriptionID,
