@@ -1,4 +1,5 @@
 import Cocoa
+import AVFoundation
 import ImageIO
 
 @MainActor
@@ -136,6 +137,7 @@ private final class TimelineNoteRowView: NSTableCellView {
         case text(String)
         case link(String)
         case image(BlossomMediaReference)
+        case video(BlossomMediaReference)
         case embeddedNote(NostrEvent)
     }
 
@@ -295,6 +297,20 @@ private final class TimelineNoteRowView: NSTableCellView {
                 button.thumbnail = image
             }
             return button
+        case let .video(reference):
+            let button = ThumbnailButton(frame: .zero)
+            button.target = self
+            button.action = #selector(openMedia(_:))
+            button.isBordered = false
+            button.toolTip = "Play video"
+            button.payload = reference
+            button.showsPlayButton = true
+            button.heightAnchor.constraint(equalToConstant: 160).isActive = true
+            ImageThumbnailCache.shared.thumbnail(for: reference) { [weak button] image in
+                guard let button, let image else { return }
+                button.thumbnail = image
+            }
+            return button
         case let .embeddedNote(note):
             return EmbeddedNoteCard(event: note, profile: profilesByPublicKey[note.pubkey])
         }
@@ -320,9 +336,8 @@ private final class TimelineNoteRowView: NSTableCellView {
                let linkedNote = linkedNotesByID[eventID] {
                 items.append(.embeddedNote(linkedNote))
             } else if let reference = references[url],
-               let localURL = try? BlossomMediaStore().localURL(for: reference.hash),
-               !isVideo(localURL) {
-                items.append(.image(reference))
+                      let localURL = try? BlossomMediaStore().localURL(for: reference.hash) {
+                items.append(isVideo(localURL) ? .video(reference) : .image(reference))
             } else {
                 items.append(.link(url))
             }
@@ -573,8 +588,16 @@ private class PayloadButton: NSButton {
 
 private final class ThumbnailButton: PayloadButton {
     private let thumbnailView = NSImageView()
+    private let playButtonView = NSImageView()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
+
+    var showsPlayButton = false {
+        didSet {
+            playButtonView.isHidden = !showsPlayButton
+            needsLayout = true
+        }
+    }
 
     var thumbnail: NSImage? {
         didSet {
@@ -590,7 +613,12 @@ private final class ThumbnailButton: PayloadButton {
         thumbnailView.wantsLayer = true
         thumbnailView.layer?.cornerRadius = 7
         thumbnailView.layer?.masksToBounds = true
+        playButtonView.image = NSImage(systemSymbolName: "play.circle.fill", accessibilityDescription: "Play video")
+        playButtonView.symbolConfiguration = .init(pointSize: 42, weight: .medium)
+        playButtonView.contentTintColor = .white.withAlphaComponent(0.92)
+        playButtonView.isHidden = true
         addSubview(thumbnailView)
+        addSubview(playButtonView)
     }
 
     required init?(coder: NSCoder) {
@@ -600,18 +628,31 @@ private final class ThumbnailButton: PayloadButton {
         thumbnailView.wantsLayer = true
         thumbnailView.layer?.cornerRadius = 7
         thumbnailView.layer?.masksToBounds = true
+        playButtonView.image = NSImage(systemSymbolName: "play.circle.fill", accessibilityDescription: "Play video")
+        playButtonView.symbolConfiguration = .init(pointSize: 42, weight: .medium)
+        playButtonView.contentTintColor = .white.withAlphaComponent(0.92)
+        playButtonView.isHidden = true
         addSubview(thumbnailView)
+        addSubview(playButtonView)
     }
 
     override func layout() {
         super.layout()
         guard let thumbnail, thumbnail.size.width > 0, thumbnail.size.height > 0 else {
             thumbnailView.frame = .zero
+            playButtonView.frame = .zero
             return
         }
         let scale = min(bounds.width / thumbnail.size.width, bounds.height / thumbnail.size.height, 1)
         let size = NSSize(width: thumbnail.size.width * scale, height: thumbnail.size.height * scale)
         thumbnailView.frame = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
+        let playSize: CGFloat = 46
+        playButtonView.frame = NSRect(
+            x: thumbnailView.frame.midX - playSize / 2,
+            y: thumbnailView.frame.midY - playSize / 2,
+            width: playSize,
+            height: playSize
+        )
     }
 
     override func resetCursorRects() {
@@ -745,7 +786,7 @@ private final class ImageThumbnailCache {
         let item = queued.removeFirst()
         activeLoads += 1
         Task.detached(priority: .utility) {
-            let image = Self.makeThumbnail(from: item.url)
+            let image = await Self.makeThumbnail(from: item.url)
             await MainActor.run {
                 ImageThumbnailCache.shared.activeLoads -= 1
                 ImageThumbnailCache.shared.finish(image, for: item.hash)
@@ -755,7 +796,10 @@ private final class ImageThumbnailCache {
         startNextLoad()
     }
 
-    nonisolated private static func makeThumbnail(from url: URL) -> NSImage? {
+    nonisolated private static func makeThumbnail(from url: URL) async -> NSImage? {
+        if isVideo(url) {
+            return await makeVideoThumbnail(from: url)
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -767,5 +811,17 @@ private final class ImageThumbnailCache {
             return nil
         }
         return NSImage(cgImage: image, size: NSSize(width: image.width / 2, height: image.height / 2))
+    }
+
+    nonisolated private static func makeVideoThumbnail(from url: URL) async -> NSImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 480, height: 480)
+        guard let (image, _) = try? await generator.image(at: .zero) else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: image.width / 2, height: image.height / 2))
+    }
+
+    nonisolated private static func isVideo(_ url: URL) -> Bool {
+        ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
 }
