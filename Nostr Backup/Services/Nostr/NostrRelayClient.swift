@@ -46,6 +46,20 @@ struct NostrRelayClient {
         return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
     }
 
+    func fetchProfiles(publicKeys: [String]) async -> [NostrEvent] {
+        guard !publicKeys.isEmpty else { return [] }
+        var uniqueEvents: [String: NostrEvent] = [:]
+
+        for relayURL in relayURLs {
+            guard let events = try? await fetchPage(
+                from: relayURL,
+                filter: ["authors": publicKeys, "kinds": [0], "limit": publicKeys.count]
+            ) else { continue }
+            events.forEach { uniqueEvents[$0.id] = $0 }
+        }
+        return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
+    }
+
     private func fetchAllEvents(from relayURL: URL, publicKey: String) async throws -> [NostrEvent] {
         var allEvents: [NostrEvent] = []
         var until: Int?

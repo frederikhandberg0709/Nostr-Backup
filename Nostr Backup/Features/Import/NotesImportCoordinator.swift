@@ -14,8 +14,10 @@ final class NotesImportCoordinator {
         let authoredEvents = try await relayClient.fetchAuthoredEvents(publicKey: publicKey)
         let linkedEventIDs = Self.linkedEventIDs(in: authoredEvents)
         let linkedEvents = await relayClient.fetchReferencedEvents(eventIDs: Array(linkedEventIDs))
+        let linkedProfiles = await relayClient.fetchProfiles(publicKeys: Array(Set(linkedEvents.map(\.pubkey))))
         var eventsByID = Dictionary(uniqueKeysWithValues: authoredEvents.map { ($0.id, $0) })
         linkedEvents.forEach { eventsByID[$0.id] = $0 }
+        linkedProfiles.forEach { eventsByID[$0.id] = $0 }
         let events = Array(eventsByID.values)
         let archiveURL = try archiveStore.save(
             npub: npub,
@@ -24,7 +26,7 @@ final class NotesImportCoordinator {
             events: events
         )
         let profile = events
-            .filter { $0.kind == 0 }
+            .filter { $0.kind == 0 && $0.pubkey == publicKey }
             .max { $0.createdAt < $1.createdAt }
             .flatMap(NostrProfile.init(event:))
 

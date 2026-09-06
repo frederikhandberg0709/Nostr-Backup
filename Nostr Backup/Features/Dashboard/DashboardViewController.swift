@@ -6,6 +6,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private let npub: String
     private let events: [NostrEvent]
     private let linkedNotesByID: [String: NostrEvent]
+    private let profilesByPublicKey: [String: NostrProfile]
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
 
@@ -19,6 +20,12 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
             self.events = events.filter { $0.kind == 1 }.sorted { $0.createdAt > $1.createdAt }
         }
         linkedNotesByID = Dictionary(uniqueKeysWithValues: events.filter { $0.kind == 1 }.map { ($0.id, $0) })
+        profilesByPublicKey = events
+            .filter { $0.kind == 0 }
+            .sorted { $0.createdAt < $1.createdAt }
+            .reduce(into: [:]) { profiles, event in
+                if let profile = NostrProfile(event: event) { profiles[event.pubkey] = profile }
+            }
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -34,12 +41,12 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     func numberOfRows(in tableView: NSTableView) -> Int { events.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        TimelineNoteRowView.height(for: events[row], width: max(tableView.bounds.width, 520), linkedNotesByID: linkedNotesByID)
+        TimelineNoteRowView.height(for: events[row], width: max(tableView.bounds.width, 520), linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
-        let rowView = TimelineNoteRowView(event: event, linkedNotesByID: linkedNotesByID)
+        let rowView = TimelineNoteRowView(event: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
         rowView.onOpenMedia = { [weak self] reference in self?.openMedia(reference) }
         return rowView
     }
@@ -118,26 +125,36 @@ private final class TimelineNoteRowView: NSView {
 
     private let event: NostrEvent
     private let items: [ContentItem]
+    private let profile: NostrProfile?
+    private let profilesByPublicKey: [String: NostrProfile]
+    private let avatarView = ProfileAvatarView(diameter: 34)
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
-    private let savedLabel = NSTextField(labelWithString: "Saved locally")
     private var contentViews: [NSView] = []
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
-    init(event: NostrEvent, linkedNotesByID: [String: NostrEvent]) {
+    init(event: NostrEvent, linkedNotesByID: [String: NostrEvent], profilesByPublicKey: [String: NostrProfile]) {
         self.event = event
-        items = Self.contentItems(for: event, linkedNotesByID: linkedNotesByID)
+        self.profilesByPublicKey = profilesByPublicKey
+        profile = profilesByPublicKey[event.pubkey]
+        items = Self.contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 12
         layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.58).cgColor
 
+        avatarView.configure(with: profile?.pictureURL)
+        nameLabel.stringValue = Self.displayName(for: event, profile: profile)
+        usernameLabel.stringValue = Self.username(for: event, profile: profile)
         dateLabel.stringValue = Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .shortened)
+        nameLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        usernameLabel.font = .systemFont(ofSize: 13)
+        usernameLabel.textColor = .secondaryLabelColor
         dateLabel.font = .systemFont(ofSize: 12)
         dateLabel.textColor = .secondaryLabelColor
-        savedLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        savedLabel.textColor = .systemGreen
-        [dateLabel, savedLabel].forEach(addSubview)
+        [avatarView, nameLabel, usernameLabel, dateLabel].forEach(addSubview)
         contentViews = items.map(makeContentView)
         contentViews.forEach(addSubview)
     }
@@ -148,9 +165,12 @@ private final class TimelineNoteRowView: NSView {
         super.layout()
         let inset: CGFloat = 16
         let contentWidth = max(bounds.width - inset * 2, 1)
-        dateLabel.frame = NSRect(x: inset, y: bounds.height - 31, width: 240, height: 16)
-        savedLabel.sizeToFit()
-        savedLabel.frame.origin = NSPoint(x: bounds.width - inset - savedLabel.frame.width, y: bounds.height - 31)
+        avatarView.frame = NSRect(x: inset, y: bounds.height - 50, width: 34, height: 34)
+        dateLabel.frame = NSRect(x: bounds.width - inset - 116, y: bounds.height - 34, width: 116, height: 16)
+        nameLabel.sizeToFit()
+        let nameWidth = min(nameLabel.frame.width, max(40, dateLabel.frame.minX - avatarView.frame.maxX - 12))
+        nameLabel.frame = NSRect(x: avatarView.frame.maxX + 10, y: bounds.height - 34, width: nameWidth, height: 16)
+        usernameLabel.frame = NSRect(x: nameLabel.frame.maxX + 6, y: bounds.height - 34, width: max(1, dateLabel.frame.minX - nameLabel.frame.maxX - 12), height: 16)
 
         var y: CGFloat = inset
         for (item, contentView) in zip(items, contentViews).reversed() {
@@ -160,9 +180,9 @@ private final class TimelineNoteRowView: NSView {
         }
     }
 
-    static func height(for event: NostrEvent, width: CGFloat, linkedNotesByID: [String: NostrEvent]) -> CGFloat {
+    static func height(for event: NostrEvent, width: CGFloat, linkedNotesByID: [String: NostrEvent], profilesByPublicKey: [String: NostrProfile]) -> CGFloat {
         let contentWidth = max(width - 32, 1)
-        let items = contentItems(for: event, linkedNotesByID: linkedNotesByID)
+        let items = contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
         let contentHeight = items.reduce(CGFloat.zero) { $0 + size(for: $1, availableWidth: contentWidth).height } + CGFloat(max(items.count - 1, 0) * 8)
         return ceil(contentHeight) + 68
     }
@@ -204,11 +224,11 @@ private final class TimelineNoteRowView: NSView {
             }
             return button
         case let .embeddedNote(note):
-            return EmbeddedNoteCard(event: note)
+            return EmbeddedNoteCard(event: note, profile: profilesByPublicKey[note.pubkey])
         }
     }
 
-    private static func contentItems(for event: NostrEvent, linkedNotesByID: [String: NostrEvent]) -> [ContentItem] {
+    private static func contentItems(for event: NostrEvent, linkedNotesByID: [String: NostrEvent], profilesByPublicKey: [String: NostrProfile]) -> [ContentItem] {
         let references = Dictionary(uniqueKeysWithValues: BlossomMediaReference.find(in: [event]).map { ($0.sourceURL.absoluteString, $0) })
         let pattern = #"(?:https?://[^\s\"'<>]+|nostr:nevent1[023456789acdefghjklmnpqrstuvwxyz]+)"#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [.text(event.content)] }
@@ -262,6 +282,20 @@ private final class TimelineNoteRowView: NSView {
         ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
 
+    private static func displayName(for event: NostrEvent, profile: NostrProfile?) -> String {
+        profile?.displayName ?? abbreviated(event.pubkey)
+    }
+
+    private static func username(for event: NostrEvent, profile: NostrProfile?) -> String {
+        let username = profile?.username ?? abbreviated(event.pubkey)
+        return username.hasPrefix("@") ? username : "@\(username)"
+    }
+
+    private static func abbreviated(_ publicKey: String) -> String {
+        guard publicKey.count > 16 else { return publicKey }
+        return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
+    }
+
     @objc private func openMedia(_ sender: NSButton) {
         guard let reference = (sender as? PayloadButton)?.payload as? BlossomMediaReference else { return }
         onOpenMedia?(reference)
@@ -276,11 +310,13 @@ private final class TimelineNoteRowView: NSView {
 @MainActor
 private final class EmbeddedNoteCard: NSView {
     private let event: NostrEvent
-    private let titleLabel = NSTextField(labelWithString: "Linked note")
-    private let metadataLabel = NSTextField(labelWithString: "")
+    private let avatarView = ProfileAvatarView(diameter: 26)
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let usernameLabel = NSTextField(labelWithString: "")
+    private let dateLabel = NSTextField(labelWithString: "")
     private let bodyLabel: NSTextField
 
-    init(event: NostrEvent) {
+    init(event: NostrEvent, profile: NostrProfile?) {
         self.event = event
         bodyLabel = NSTextField(wrappingLabelWithString: event.content)
         super.init(frame: .zero)
@@ -288,15 +324,20 @@ private final class EmbeddedNoteCard: NSView {
         layer?.cornerRadius = 9
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.82).cgColor
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.textColor = .secondaryLabelColor
-        metadataLabel.stringValue = "(Self.abbreviated(event.pubkey)) · \(Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .omitted))"
-        metadataLabel.font = .systemFont(ofSize: 12)
-        metadataLabel.textColor = .tertiaryLabelColor
-        metadataLabel.alignment = .right
+        avatarView.configure(with: profile?.pictureURL)
+        nameLabel.stringValue = profile?.displayName ?? Self.abbreviated(event.pubkey)
+        nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        let username = profile?.username ?? Self.abbreviated(event.pubkey)
+        usernameLabel.stringValue = username.hasPrefix("@") ? username : "@\(username)"
+        usernameLabel.font = .systemFont(ofSize: 12)
+        usernameLabel.textColor = .secondaryLabelColor
+        dateLabel.stringValue = Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .omitted)
+        dateLabel.font = .systemFont(ofSize: 12)
+        dateLabel.textColor = .tertiaryLabelColor
+        dateLabel.alignment = .right
         bodyLabel.font = .systemFont(ofSize: 14)
         bodyLabel.lineBreakMode = .byTruncatingTail
-        [titleLabel, metadataLabel, bodyLabel].forEach(addSubview)
+        [avatarView, nameLabel, usernameLabel, dateLabel, bodyLabel].forEach(addSubview)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -304,9 +345,13 @@ private final class EmbeddedNoteCard: NSView {
     override func layout() {
         super.layout()
         let inset: CGFloat = 12
-        titleLabel.frame = NSRect(x: inset, y: bounds.height - 29, width: 100, height: 16)
-        metadataLabel.frame = NSRect(x: 116, y: bounds.height - 29, width: max(1, bounds.width - 128), height: 16)
-        bodyLabel.frame = NSRect(x: inset, y: 11, width: max(1, bounds.width - inset * 2), height: max(1, bounds.height - 47))
+        avatarView.frame = NSRect(x: inset, y: bounds.height - 39, width: 26, height: 26)
+        dateLabel.frame = NSRect(x: bounds.width - inset - 78, y: bounds.height - 32, width: 78, height: 15)
+        nameLabel.sizeToFit()
+        let nameWidth = min(nameLabel.frame.width, max(36, dateLabel.frame.minX - avatarView.frame.maxX - 10))
+        nameLabel.frame = NSRect(x: avatarView.frame.maxX + 8, y: bounds.height - 32, width: nameWidth, height: 15)
+        usernameLabel.frame = NSRect(x: nameLabel.frame.maxX + 5, y: bounds.height - 32, width: max(1, dateLabel.frame.minX - nameLabel.frame.maxX - 9), height: 15)
+        bodyLabel.frame = NSRect(x: inset, y: 11, width: max(1, bounds.width - inset * 2), height: max(1, bounds.height - 49))
     }
 
     static func height(for event: NostrEvent, width: CGFloat) -> CGFloat {
@@ -315,12 +360,61 @@ private final class EmbeddedNoteCard: NSView {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: NSFont.systemFont(ofSize: 14)]
         ).height
-        return ceil(min(bodyHeight, 100)) + 47
+        return ceil(min(bodyHeight, 100)) + 49
     }
 
     private static func abbreviated(_ publicKey: String) -> String {
         guard publicKey.count > 16 else { return publicKey }
         return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
+    }
+}
+
+@MainActor
+private final class ProfileAvatarView: NSImageView {
+    init(diameter: CGFloat) {
+        super.init(frame: NSRect(x: 0, y: 0, width: diameter, height: diameter))
+        image = NSImage(systemSymbolName: "person.crop.circle.fill", accessibilityDescription: "Profile picture")
+        contentTintColor = .secondaryLabelColor
+        imageScaling = .scaleProportionallyUpOrDown
+        wantsLayer = true
+        layer?.cornerRadius = diameter / 2
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let image, image.size.width > 0, image.size.height > 0 else {
+            super.draw(dirtyRect)
+            return
+        }
+
+        let scale = max(bounds.width / image.size.width, bounds.height / image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let rect = NSRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        image.draw(
+            in: rect,
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: isFlipped,
+            hints: nil
+        )
+    }
+
+    func configure(with pictureURL: URL?) {
+        guard let pictureURL else { return }
+        Task { [weak self] in
+            guard let data = try? await URLSession.shared.data(from: pictureURL).0,
+                  let image = NSImage(data: data) else { return }
+            self?.image = image
+            self?.contentTintColor = nil
+        }
     }
 }
 
