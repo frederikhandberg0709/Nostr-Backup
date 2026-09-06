@@ -387,7 +387,7 @@ private final class WrappingTextField: NSTextField {
         super.init(frame: .zero)
         stringValue = text
         isEditable = false
-        isSelectable = false
+        isSelectable = true
         isBordered = false
         drawsBackground = false
         usesSingleLineMode = false
