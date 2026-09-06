@@ -148,6 +148,8 @@ private final class TimelineNoteRowView: NSTableCellView {
     private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
     private let contentStack = NSStackView()
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
@@ -161,6 +163,9 @@ private final class TimelineNoteRowView: NSTableCellView {
         layer?.cornerRadius = 12
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.58).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        layer?.opacity = 0.82
 
         avatarView.configure(with: profile?.pictureURL)
         nameLabel.stringValue = Self.displayName(for: event, profile: profile)
@@ -213,6 +218,50 @@ private final class TimelineNoteRowView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        animateOpacity()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        animateOpacity()
+    }
+
+    private func animateOpacity() {
+        guard let layer else { return }
+        let opacity: Float = isHovering ? 1 : 0.82
+        let borderColor = NSColor.white.withAlphaComponent(isHovering ? 0.20 : 0.12).cgColor
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = layer.presentation()?.opacity ?? layer.opacity
+        animation.toValue = opacity
+        animation.duration = 0.18
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.opacity = opacity
+        layer.add(animation, forKey: "timelineNoteHoverOpacity")
+
+        let borderAnimation = CABasicAnimation(keyPath: "borderColor")
+        borderAnimation.fromValue = layer.presentation()?.borderColor ?? layer.borderColor
+        borderAnimation.toValue = borderColor
+        borderAnimation.duration = 0.18
+        borderAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.borderColor = borderColor
+        layer.add(borderAnimation, forKey: "timelineNoteHoverBorder")
+    }
 
 
     private func makeContentView(for item: ContentItem) -> NSView {
@@ -325,6 +374,8 @@ private final class EmbeddedNoteCard: NSView {
     private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
     private let bodyLabel: WrappingTextField
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
 
     init(event: NostrEvent, profile: NostrProfile?) {
         self.event = event
@@ -334,6 +385,9 @@ private final class EmbeddedNoteCard: NSView {
         layer?.cornerRadius = 9
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.82).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        layer?.opacity = 0.82
         avatarView.configure(with: profile?.pictureURL)
         nameLabel.stringValue = profile?.displayName ?? Self.abbreviated(event.pubkey)
         nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -373,6 +427,50 @@ private final class EmbeddedNoteCard: NSView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        animateOpacity()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        animateOpacity()
+    }
+
+    private func animateOpacity() {
+        guard let layer else { return }
+        let opacity: Float = isHovering ? 1 : 0.82
+        let borderColor = NSColor.white.withAlphaComponent(isHovering ? 0.20 : 0.12).cgColor
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = layer.presentation()?.opacity ?? layer.opacity
+        animation.toValue = opacity
+        animation.duration = 0.18
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.opacity = opacity
+        layer.add(animation, forKey: "embeddedNoteHoverOpacity")
+
+        let borderAnimation = CABasicAnimation(keyPath: "borderColor")
+        borderAnimation.fromValue = layer.presentation()?.borderColor ?? layer.borderColor
+        borderAnimation.toValue = borderColor
+        borderAnimation.duration = 0.18
+        borderAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.borderColor = borderColor
+        layer.add(borderAnimation, forKey: "embeddedNoteHoverBorder")
+    }
 
     private static func abbreviated(_ publicKey: String) -> String {
         guard publicKey.count > 16 else { return publicKey }
