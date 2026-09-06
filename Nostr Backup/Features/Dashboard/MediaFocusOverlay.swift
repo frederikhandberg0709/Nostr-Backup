@@ -26,6 +26,8 @@ final class MediaFocusOverlay: NSView {
     private var baseMediaFrame = NSRect.zero
     private var zoomAnchor = CGPoint.zero
     private var ignoresMomentumUntilNextGesture = false
+    private var zoomSnapshotLayer: CALayer?
+    private var zoomAnimationDelegate: LayerAnimationDelegate?
 
     var reference: BlossomMediaReference { references[currentIndex] }
     var onSave: ((BlossomMediaReference) async -> Void)?
@@ -96,7 +98,7 @@ final class MediaFocusOverlay: NSView {
         guard zoomScale > 1 else { return }
         if event.phase == .began { ignoresMomentumUntilNextGesture = false }
         if ignoresMomentumUntilNextGesture, event.momentumPhase != [] { return }
-        if imageView.layer?.animation(forKey: "mediaFramePosition") != nil {
+        if zoomSnapshotLayer != nil || imageView.layer?.animation(forKey: "mediaFramePosition") != nil {
             stopMediaFrameAnimation()
         }
         let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
@@ -267,11 +269,13 @@ final class MediaFocusOverlay: NSView {
     }
 
     private func toggleZoom(at localPoint: CGPoint) {
-        zoomAnchor = convert(localPoint, from: imageView)
+        let overlayPoint = convert(localPoint, from: imageView)
+        zoomAnchor = overlayPoint
         zoomScale = zoomScale > 1 ? 1 : 2.5
         panOffset = .zero
         rawPanOffset = .zero
-        animateMediaFrame(to: transformedMediaFrame())
+        let targetFrame = transformedMediaFrame()
+        animateMediaFrame(to: targetFrame)
     }
     private func adjustZoom(by amount: CGFloat, at localPoint: CGPoint) {
         zoomAnchor = convert(localPoint, from: imageView)
@@ -279,7 +283,13 @@ final class MediaFocusOverlay: NSView {
         if zoomScale == 1 { panOffset = .zero; rawPanOffset = .zero }
         applyTransform()
     }
-    private func resetTransform() { zoomScale = 1; panOffset = .zero; rawPanOffset = .zero; applyTransform() }
+    private func resetTransform() {
+        removeZoomSnapshot(revealImage: false)
+        zoomScale = 1
+        panOffset = .zero
+        rawPanOffset = .zero
+        applyTransform()
+    }
     private func pan(by offset: CGPoint) {
         guard zoomScale > 1 else { return }
         let maxX = baseMediaFrame.width * (zoomScale - 1) / 2
@@ -360,36 +370,115 @@ final class MediaFocusOverlay: NSView {
     }
 
     private func animateMediaFrame(to targetFrame: NSRect) {
-        guard let layer = imageView.layer else { applyTransform(); return }
+        guard let layer = imageView.layer,
+              let image = imageView.image,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            applyTransform()
+            return
+        }
         let startPosition = layer.presentation()?.position ?? layer.position
         let startBounds = layer.presentation()?.bounds ?? layer.bounds
+        let startFrame = layer.presentation()?.frame ?? layer.frame
+        removeZoomSnapshot(revealImage: false)
+
+        let snapshot = CALayer()
+        snapshot.contents = cgImage
+        snapshot.contentsGravity = .resizeAspect
+        snapshot.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        snapshot.cornerRadius = imageView.layer?.cornerRadius ?? 0
+        snapshot.masksToBounds = true
+        snapshot.anchorPoint = layer.anchorPoint
+        snapshot.frame = startFrame
+        layer.superlayer?.addSublayer(snapshot)
+        zoomSnapshotLayer = snapshot
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.removeAnimation(forKey: "mediaFramePosition")
         layer.removeAnimation(forKey: "mediaFrameBounds")
         imageView.frame = targetFrame
+        imageView.isHidden = true
+        // Explicit animations animate from the original geometry below, but
+        // their layer must already have the final model geometry. Otherwise
+        // Core Animation briefly restores this layer to its start frame when
+        // the animation is removed.
+        snapshot.position = CGPoint(x: targetFrame.minX, y: targetFrame.minY)
+        snapshot.bounds = CGRect(origin: .zero, size: targetFrame.size)
         CATransaction.commit()
 
-        let positionSpring = CASpringAnimation(keyPath: "position")
-        positionSpring.fromValue = startPosition
-        positionSpring.toValue = layer.position
-        positionSpring.mass = 1
-        positionSpring.stiffness = 260
-        positionSpring.damping = 21
-        positionSpring.duration = positionSpring.settlingDuration
-        layer.add(positionSpring, forKey: "mediaFramePosition")
+        NSLog(
+            "[MediaFocusZoom] snapshot start=(%.1f, %.1f, %.1f, %.1f) target=(%.1f, %.1f, %.1f, %.1f)",
+            startFrame.origin.x, startFrame.origin.y, startFrame.width, startFrame.height,
+            targetFrame.origin.x, targetFrame.origin.y, targetFrame.width, targetFrame.height
+        )
 
-        let boundsSpring = CASpringAnimation(keyPath: "bounds")
-        boundsSpring.fromValue = startBounds
-        boundsSpring.toValue = layer.bounds
-        boundsSpring.mass = positionSpring.mass
-        boundsSpring.stiffness = positionSpring.stiffness
-        boundsSpring.damping = positionSpring.damping
-        boundsSpring.duration = positionSpring.duration
-        layer.add(boundsSpring, forKey: "mediaFrameBounds")
+        let duration: CFTimeInterval = 0.42
+        let timing = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let positionAnimation = CABasicAnimation(keyPath: "position")
+        positionAnimation.fromValue = startPosition
+        positionAnimation.toValue = CGPoint(x: targetFrame.minX, y: targetFrame.minY)
+        positionAnimation.duration = duration
+        positionAnimation.timingFunction = timing
+        layer.add(positionAnimation, forKey: "mediaFramePosition")
+
+        let boundsAnimation = CABasicAnimation(keyPath: "bounds")
+        boundsAnimation.fromValue = startBounds
+        boundsAnimation.toValue = CGRect(origin: .zero, size: targetFrame.size)
+        boundsAnimation.duration = duration
+        boundsAnimation.timingFunction = timing
+        let animationGroup = CAAnimationGroup()
+        animationGroup.animations = [positionAnimation, boundsAnimation]
+        animationGroup.duration = duration
+        animationGroup.timingFunction = timing
+        let delegate = LayerAnimationDelegate { [weak self, weak snapshot] finished in
+            guard finished, let self, let snapshot, self.zoomSnapshotLayer === snapshot else { return }
+            self.handoffZoomSnapshot(snapshot)
+        }
+        zoomAnimationDelegate = delegate
+        animationGroup.delegate = delegate
+        snapshot.add(animationGroup, forKey: "mediaFocusZoom")
+    }
+
+    private func handoffZoomSnapshot(_ snapshot: CALayer) {
+        // Render the final AppKit view while the composited copy remains fully
+        // visible, then dissolve the copy. Removing it immediately can expose
+        // a single unrendered frame of the NSImageView.
+        imageView.isHidden = false
+        imageView.displayIfNeeded()
+        let snapshotFrame = snapshot.presentation()?.frame ?? snapshot.frame
+        let imageFrame = imageView.layer?.presentation()?.frame ?? imageView.layer?.frame ?? .zero
+        NSLog(
+            "[MediaFocusZoom] handoff snapshot=(%.1f, %.1f, %.1f, %.1f) image=(%.1f, %.1f, %.1f, %.1f)",
+            snapshotFrame.origin.x, snapshotFrame.origin.y, snapshotFrame.width, snapshotFrame.height,
+            imageFrame.origin.x, imageFrame.origin.y, imageFrame.width, imageFrame.height
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        snapshot.opacity = 0
+        CATransaction.commit()
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.duration = 0.10
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        let delegate = LayerAnimationDelegate { [weak self, weak snapshot] finished in
+            guard finished, let self, let snapshot, self.zoomSnapshotLayer === snapshot else { return }
+            NSLog("[MediaFocusZoom] handoff complete")
+            self.removeZoomSnapshot(revealImage: true)
+        }
+        zoomAnimationDelegate = delegate
+        fade.delegate = delegate
+        snapshot.add(fade, forKey: "mediaFocusZoomHandoff")
     }
 
     private func stopMediaFrameAnimation() {
+        if zoomSnapshotLayer != nil {
+            removeZoomSnapshot(revealImage: true)
+            return
+        }
         guard let layer = imageView.layer,
               let presentation = layer.presentation() else { return }
         let displayedFrame = presentation.frame
@@ -409,6 +498,14 @@ final class MediaFocusOverlay: NSView {
         CATransaction.commit()
         panOffset = displayedOffset
         rawPanOffset = displayedOffset
+    }
+
+    private func removeZoomSnapshot(revealImage: Bool) {
+        zoomSnapshotLayer?.removeAllAnimations()
+        zoomSnapshotLayer?.removeFromSuperlayer()
+        zoomSnapshotLayer = nil
+        zoomAnimationDelegate = nil
+        if revealImage { imageView.isHidden = false }
     }
 
     private func logPan(_ source: String, input: CGPoint, maxX: CGFloat, maxY: CGFloat) {
@@ -436,6 +533,18 @@ final class MediaFocusOverlay: NSView {
         } completionHandler: { [weak self] in self?.removeFromSuperview() }
     }
     private static func isVideo(_ url: URL) -> Bool { ["mov", "mp4", "m4v", "webm", "avi"].contains(url.pathExtension.lowercased()) }
+}
+
+private final class LayerAnimationDelegate: NSObject, CAAnimationDelegate {
+    private let completion: (Bool) -> Void
+
+    init(completion: @escaping (Bool) -> Void) {
+        self.completion = completion
+    }
+
+    func animationDidStop(_ anim: CAAnimation, finished flag: Bool) {
+        completion(flag)
+    }
 }
 
 @MainActor
