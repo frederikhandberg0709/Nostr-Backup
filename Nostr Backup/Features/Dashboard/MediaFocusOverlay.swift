@@ -520,7 +520,13 @@ final class MediaFocusOverlay: NSView {
         )
     }
     private func handleSwipe(_ offset: CGPoint) {
-        if zoomScale > 1 { snapPanToBounds() }
+        // A drag while zoomed is panning the image, never an overlay swipe.
+        // Without the early return, releasing a long pan also triggered the
+        // dismiss/navigation thresholds below.
+        if zoomScale > 1 {
+            snapPanToBounds()
+            return
+        }
         if abs(offset.y) > 60, abs(offset.y) > abs(offset.x) { dismiss() }
         else if abs(offset.x) > 60, abs(offset.x) > abs(offset.y) { navigate(to: currentIndex + (offset.x < 0 ? 1 : -1)) }
     }
