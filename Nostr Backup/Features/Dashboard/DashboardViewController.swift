@@ -9,6 +9,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private let profilesByPublicKey: [String: NostrProfile]
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
+    private var rowHeightReloadWorkItem: DispatchWorkItem?
 
     var onSaveMedia: ((BlossomMediaReference) async throws -> Bool)?
 
@@ -40,8 +41,21 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
     func numberOfRows(in tableView: NSTableView) -> Int { events.count }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        TimelineNoteRowView.height(for: events[row], width: max(tableView.bounds.width, 520), linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<events.count))
+        rowHeightReloadWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                self.tableView.reloadData()
+            }
+        }
+        rowHeightReloadWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -75,6 +89,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.delegate = self
         tableView.backgroundColor = .clear
         tableView.intercellSpacing = NSSize(width: 0, height: 8)
+        tableView.usesAutomaticRowHeights = true
+        tableView.rowHeight = 120 // An estimate for off-screen rows; Auto Layout supplies the final height.
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
@@ -115,7 +131,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 }
 
 @MainActor
-private final class TimelineNoteRowView: NSView {
+private final class TimelineNoteRowView: NSTableCellView {
     private enum ContentItem {
         case text(String)
         case link(String)
@@ -131,7 +147,7 @@ private final class TimelineNoteRowView: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
-    private var contentViews: [NSView] = []
+    private let contentStack = NSStackView()
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
@@ -143,6 +159,7 @@ private final class TimelineNoteRowView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 12
+        layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.58).cgColor
 
         avatarView.configure(with: profile?.pictureURL)
@@ -154,52 +171,56 @@ private final class TimelineNoteRowView: NSView {
         usernameLabel.textColor = .secondaryLabelColor
         dateLabel.font = .systemFont(ofSize: 12)
         dateLabel.textColor = .secondaryLabelColor
-        [avatarView, nameLabel, usernameLabel, dateLabel].forEach(addSubview)
-        contentViews = items.map(makeContentView)
-        contentViews.forEach(addSubview)
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 8
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        [avatarView, nameLabel, usernameLabel, dateLabel].forEach { view in
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        items.map(makeContentView).forEach { contentView in
+            contentView.translatesAutoresizingMaskIntoConstraints = false
+            contentStack.addArrangedSubview(contentView)
+            contentView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            contentView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            NSLayoutConstraint.activate([
+                contentView.leadingAnchor.constraint(equalTo: contentStack.leadingAnchor),
+                contentView.trailingAnchor.constraint(equalTo: contentStack.trailingAnchor)
+            ])
+        }
+        addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            avatarView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            avatarView.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+            avatarView.widthAnchor.constraint(equalToConstant: 34),
+            avatarView.heightAnchor.constraint(equalToConstant: 34),
+            dateLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            dateLabel.widthAnchor.constraint(equalToConstant: 116),
+            nameLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 10),
+            nameLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
+            usernameLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
+            usernameLabel.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
+            usernameLabel.trailingAnchor.constraint(lessThanOrEqualTo: dateLabel.leadingAnchor, constant: -8),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            contentStack.topAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 14),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+        ])
+        nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+        usernameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     required init?(coder: NSCoder) { nil }
 
-    override func layout() {
-        super.layout()
-        let inset: CGFloat = 16
-        let contentWidth = max(bounds.width - inset * 2, 1)
-        avatarView.frame = NSRect(x: inset, y: bounds.height - 50, width: 34, height: 34)
-        dateLabel.frame = NSRect(x: bounds.width - inset - 116, y: bounds.height - 34, width: 116, height: 16)
-        nameLabel.sizeToFit()
-        let nameWidth = min(nameLabel.frame.width, max(40, dateLabel.frame.minX - avatarView.frame.maxX - 12))
-        nameLabel.frame = NSRect(x: avatarView.frame.maxX + 10, y: bounds.height - 34, width: nameWidth, height: 16)
-        usernameLabel.frame = NSRect(x: nameLabel.frame.maxX + 6, y: bounds.height - 34, width: max(1, dateLabel.frame.minX - nameLabel.frame.maxX - 12), height: 16)
-
-        var y: CGFloat = inset
-        for (item, contentView) in zip(items, contentViews).reversed() {
-            let size = Self.size(for: item, availableWidth: contentWidth)
-            contentView.frame = NSRect(x: inset, y: y, width: size.width, height: size.height)
-            y += size.height + 8
-        }
-    }
-
-    static func height(for event: NostrEvent, width: CGFloat, linkedNotesByID: [String: NostrEvent], profilesByPublicKey: [String: NostrProfile]) -> CGFloat {
-        let contentWidth = max(width - 32, 1)
-        let items = contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
-        let contentHeight = items.reduce(CGFloat.zero) { $0 + size(for: $1, availableWidth: contentWidth).height } + CGFloat(max(items.count - 1, 0) * 8)
-        return ceil(contentHeight) + 68
-    }
-
-    private static func textHeight(_ text: String, width: CGFloat, font: NSFont = .systemFont(ofSize: 15)) -> CGFloat {
-        (text as NSString).boundingRect(
-            with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        ).height
-    }
 
     private func makeContentView(for item: ContentItem) -> NSView {
         switch item {
         case let .text(text):
-            let label = NSTextField(wrappingLabelWithString: text)
+            let label = WrappingTextField(text)
             label.font = .systemFont(ofSize: 15)
+            label.alignment = .left
             return label
         case let .link(url):
             let button = PayloadButton(title: url, target: self, action: #selector(openLink(_:)))
@@ -210,6 +231,7 @@ private final class TimelineNoteRowView: NSView {
             button.lineBreakMode = .byTruncatingMiddle
             button.toolTip = url
             button.payload = url
+            button.heightAnchor.constraint(equalToConstant: 22).isActive = true
             return button
         case let .image(reference):
             let button = ThumbnailButton(frame: .zero)
@@ -218,6 +240,7 @@ private final class TimelineNoteRowView: NSView {
             button.isBordered = false
             button.toolTip = "Open image"
             button.payload = reference
+            button.heightAnchor.constraint(equalToConstant: 160).isActive = true
             ImageThumbnailCache.shared.thumbnail(for: reference) { [weak button] image in
                 guard let button, let image else { return }
                 button.thumbnail = image
@@ -265,19 +288,6 @@ private final class TimelineNoteRowView: NSView {
         }
     }
 
-    private static func size(for item: ContentItem, availableWidth: CGFloat) -> NSSize {
-        switch item {
-        case let .text(text):
-            return NSSize(width: availableWidth, height: ceil(textHeight(text, width: availableWidth)))
-        case .link:
-            return NSSize(width: availableWidth, height: 22)
-        case .image:
-            return NSSize(width: min(240, availableWidth), height: 160)
-        case let .embeddedNote(note):
-            return NSSize(width: availableWidth, height: EmbeddedNoteCard.height(for: note, width: availableWidth))
-        }
-    }
-
     private static func isVideo(_ url: URL) -> Bool {
         ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
@@ -314,11 +324,11 @@ private final class EmbeddedNoteCard: NSView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
-    private let bodyLabel: NSTextField
+    private let bodyLabel: WrappingTextField
 
     init(event: NostrEvent, profile: NostrProfile?) {
         self.event = event
-        bodyLabel = NSTextField(wrappingLabelWithString: event.content)
+        bodyLabel = WrappingTextField(event.content)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 9
@@ -336,36 +346,77 @@ private final class EmbeddedNoteCard: NSView {
         dateLabel.textColor = .tertiaryLabelColor
         dateLabel.alignment = .right
         bodyLabel.font = .systemFont(ofSize: 14)
-        bodyLabel.lineBreakMode = .byTruncatingTail
-        [avatarView, nameLabel, usernameLabel, dateLabel, bodyLabel].forEach(addSubview)
+        [avatarView, nameLabel, usernameLabel, dateLabel, bodyLabel].forEach { view in
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            avatarView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            avatarView.topAnchor.constraint(equalTo: topAnchor, constant: 13),
+            avatarView.widthAnchor.constraint(equalToConstant: 26),
+            avatarView.heightAnchor.constraint(equalToConstant: 26),
+            dateLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            dateLabel.widthAnchor.constraint(equalToConstant: 78),
+            nameLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8),
+            nameLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
+            usernameLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 5),
+            usernameLabel.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
+            usernameLabel.trailingAnchor.constraint(lessThanOrEqualTo: dateLabel.leadingAnchor, constant: -9),
+            bodyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            bodyLabel.topAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 10),
+            bodyLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11)
+        ])
+        nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+        usernameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     required init?(coder: NSCoder) { nil }
 
-    override func layout() {
-        super.layout()
-        let inset: CGFloat = 12
-        avatarView.frame = NSRect(x: inset, y: bounds.height - 39, width: 26, height: 26)
-        dateLabel.frame = NSRect(x: bounds.width - inset - 78, y: bounds.height - 32, width: 78, height: 15)
-        nameLabel.sizeToFit()
-        let nameWidth = min(nameLabel.frame.width, max(36, dateLabel.frame.minX - avatarView.frame.maxX - 10))
-        nameLabel.frame = NSRect(x: avatarView.frame.maxX + 8, y: bounds.height - 32, width: nameWidth, height: 15)
-        usernameLabel.frame = NSRect(x: nameLabel.frame.maxX + 5, y: bounds.height - 32, width: max(1, dateLabel.frame.minX - nameLabel.frame.maxX - 9), height: 15)
-        bodyLabel.frame = NSRect(x: inset, y: 11, width: max(1, bounds.width - inset * 2), height: max(1, bounds.height - 49))
-    }
-
-    static func height(for event: NostrEvent, width: CGFloat) -> CGFloat {
-        let bodyHeight = (event.content as NSString).boundingRect(
-            with: NSSize(width: max(1, width - 24), height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: NSFont.systemFont(ofSize: 14)]
-        ).height
-        return ceil(min(bodyHeight, 100)) + 49
-    }
-
     private static func abbreviated(_ publicKey: String) -> String {
         guard publicKey.count > 16 else { return publicKey }
         return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
+    }
+}
+
+/// Gives Auto Layout a current wrapping width whenever the table column changes.
+@MainActor
+private final class WrappingTextField: NSTextField {
+    init(_ text: String) {
+        super.init(frame: .zero)
+        stringValue = text
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+        usesSingleLineMode = false
+        lineBreakMode = .byWordWrapping
+        maximumNumberOfLines = 0
+        cell?.wraps = true
+        cell?.isScrollable = false
+        cell?.truncatesLastVisibleLine = false
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updatePreferredWidth()
+    }
+
+    override func layout() {
+        super.layout()
+        updatePreferredWidth()
+    }
+
+    private func updatePreferredWidth() {
+        let width = bounds.width
+        guard width > 0, abs(preferredMaxLayoutWidth - width) > 0.5 else { return }
+        preferredMaxLayoutWidth = width
+        invalidateIntrinsicContentSize()
     }
 }
 
