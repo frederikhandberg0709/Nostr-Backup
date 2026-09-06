@@ -573,6 +573,8 @@ private class PayloadButton: NSButton {
 
 private final class ThumbnailButton: PayloadButton {
     private let thumbnailView = NSImageView()
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
 
     var thumbnail: NSImage? {
         didSet {
@@ -612,6 +614,36 @@ private final class ThumbnailButton: PayloadButton {
         thumbnailView.frame = NSRect(x: 0, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isHovering = true
+        animateThumbnailOpacity()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovering = false
+        animateThumbnailOpacity()
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard thumbnail != nil else {
             super.mouseDown(with: event)
@@ -633,6 +665,18 @@ private final class ThumbnailButton: PayloadButton {
         animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.add(animation, forKey: "thumbnailPressScale")
         layer.transform = target
+    }
+
+    private func animateThumbnailOpacity() {
+        guard let layer = thumbnailView.layer else { return }
+        let targetOpacity: Float = isHovering ? 0.94 : 1
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = layer.presentation()?.opacity ?? layer.opacity
+        animation.toValue = targetOpacity
+        animation.duration = 0.16
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.opacity = targetOpacity
+        layer.add(animation, forKey: "thumbnailHoverOpacity")
     }
 
     private func centerAnimationAnchor(for layer: CALayer) {
