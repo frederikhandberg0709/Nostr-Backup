@@ -83,7 +83,7 @@ final class DashboardContainerViewController: NSViewController {
             notesViewController = notes
             content = notes
         case .media:
-            let media = MediaLibraryViewController()
+            let media = MediaLibraryViewController(events: events)
             media.onImportBlossom = onImportBlossom
             mediaViewController = media
             content = media

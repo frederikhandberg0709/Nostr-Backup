@@ -1,4 +1,6 @@
+import AVFoundation
 import Cocoa
+import UniformTypeIdentifiers
 
 @MainActor
 final class GeneralDashboardViewController: NSViewController {
@@ -151,28 +153,90 @@ private final class AspectFillImageView: NSImageView {
 final class MediaLibraryViewController: NSViewController {
     var onImportBlossom: (() async throws -> BlossomImportSummary)?
 
+    fileprivate struct MediaItem {
+        let reference: BlossomMediaReference
+        let localURL: URL
+        let createdAt: Int?
+        let isVideo: Bool
+    }
+
+    private let events: [NostrEvent]
+    private let mediaStore = BlossomMediaStore()
     private let blossomButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
+    private let countLabel = NSTextField(labelWithString: "")
+    private let emptyLabel = NSTextField(wrappingLabelWithString: "No saved images or videos yet. Import Blossom media to add the media referenced by your notes.")
+    private let collectionView = NSCollectionView()
+    private let flowLayout = NSCollectionViewFlowLayout()
+    private var items: [MediaItem] = []
+    private var thumbnailCache: [String: NSImage] = [:]
+
+    init(events: [NostrEvent]) {
+        self.events = events
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
 
     override func loadView() { view = NSVisualEffectView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let detail = NSTextField(labelWithString: "Your local media library will appear here.")
-        detail.textColor = .secondaryLabelColor
         configure(button: blossomButton, title: "Import Blossom", imageName: "photo.on.rectangle", action: #selector(importBlossom(_:)))
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [detail, blossomButton, statusLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        countLabel.font = .systemFont(ofSize: 13)
+        countLabel.textColor = .secondaryLabelColor
+        emptyLabel.font = .systemFont(ofSize: 14)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.maximumNumberOfLines = 0
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        flowLayout.minimumInteritemSpacing = 8
+        flowLayout.minimumLineSpacing = 8
+        collectionView.collectionViewLayout = flowLayout
+        collectionView.dataSource = self
+        collectionView.delegate = self
+        collectionView.isSelectable = true
+        collectionView.register(MediaGridItem.self, forItemWithIdentifier: MediaGridItem.identifier)
+
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = collectionView
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        let header = NSStackView(views: [countLabel, blossomButton, statusLabel])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+        header.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(header)
+        view.addSubview(scrollView)
+        view.addSubview(emptyLabel)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 42),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 44)
+            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+            header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+            header.topAnchor.constraint(equalTo: view.topAnchor, constant: 28),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 18),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -28),
+            emptyLabel.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 10),
+            emptyLabel.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -10),
+            emptyLabel.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 22)
         ])
+        reloadMedia()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let availableWidth = max(1, view.bounds.width - 64)
+        let columnCount = max(2, Int(availableWidth / 180))
+        let side = floor((availableWidth - CGFloat(columnCount - 1) * flowLayout.minimumInteritemSpacing) / CGFloat(columnCount))
+        if flowLayout.itemSize.width != side {
+            flowLayout.itemSize = NSSize(width: side, height: side)
+            flowLayout.invalidateLayout()
+        }
     }
 
     private func configure(button: NSButton, title: String, imageName: String, action: Selector) {
@@ -197,11 +261,147 @@ final class MediaLibraryViewController: NSViewController {
                 let summary = try await onImportBlossom()
                 self?.statusLabel.stringValue = "Media import complete: \(summary.downloadedCount) downloaded, \(summary.alreadyStoredCount) already stored."
                 self?.statusLabel.textColor = summary.failedCount == 0 ? .secondaryLabelColor : .systemOrange
+                self?.reloadMedia()
             } catch {
                 self?.statusLabel.stringValue = error.localizedDescription
                 self?.statusLabel.textColor = .systemRed
             }
             self?.blossomButton.isEnabled = true
         }
+    }
+
+    private func reloadMedia() {
+        let timestampsByEventID = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0.createdAt) })
+        items = BlossomMediaReference.find(in: events).compactMap { reference in
+            guard let localURL = try? mediaStore.localURL(for: reference.hash),
+                  Self.isDisplayableMedia(localURL) else { return nil }
+            return MediaItem(
+                reference: reference,
+                localURL: localURL,
+                createdAt: reference.eventIDs.compactMap { timestampsByEventID[$0] }.max(),
+                isVideo: Self.isVideo(localURL)
+            )
+        }.sorted {
+            switch ($0.createdAt, $1.createdAt) {
+            case let (left?, right?): return left == right ? $0.reference.hash < $1.reference.hash : left > right
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return $0.reference.hash < $1.reference.hash
+            }
+        }
+        countLabel.stringValue = items.isEmpty ? "Media" : "\(items.count) \(items.count == 1 ? "item" : "items") · newest first"
+        emptyLabel.isHidden = !items.isEmpty
+        collectionView.reloadData()
+    }
+
+    private func thumbnail(for item: MediaItem, completion: @escaping (NSImage?) -> Void) {
+        if let image = thumbnailCache[item.reference.hash] { completion(image); return }
+        let hash = item.reference.hash
+        Task { [weak self] in
+            let image = await Task.detached(priority: .userInitiated) {
+                let image: NSImage? = {
+                if item.isVideo {
+                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: item.localURL))
+                    generator.appliesPreferredTrackTransform = true
+                    if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
+                        return NSImage(cgImage: cgImage, size: .zero)
+                    }
+                    return nil
+                } else {
+                    return NSImage(contentsOf: item.localURL)
+                }
+                }()
+                return image
+            }.value
+            guard let self else { return }
+            self.thumbnailCache[hash] = image
+            completion(image)
+        }
+    }
+
+    private func openMedia(at index: Int) {
+        let references = items.map(\.reference)
+        let overlay = MediaFocusOverlay(references: references, initialReference: items[index].reference, mediaStore: mediaStore)
+        overlay.present(over: view)
+    }
+
+    private static func isVideo(_ url: URL) -> Bool {
+        if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .movie) { return true }
+        return ["mp4", "mov", "m4v", "webm"].contains(url.pathExtension.lowercased())
+    }
+
+    private static func isDisplayableMedia(_ url: URL) -> Bool {
+        if isVideo(url) { return true }
+        return UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true || NSImage(contentsOf: url) != nil
+    }
+}
+
+extension MediaLibraryViewController: NSCollectionViewDataSource, NSCollectionViewDelegate {
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { items.count }
+
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        let cell = collectionView.makeItem(withIdentifier: MediaGridItem.identifier, for: indexPath) as! MediaGridItem
+        let item = items[indexPath.item]
+        cell.configure(item: item, thumbnail: thumbnailCache[item.reference.hash])
+        if thumbnailCache[item.reference.hash] == nil {
+            thumbnail(for: item) { [weak collectionView] image in
+                guard let collectionView,
+                      collectionView.numberOfItems(inSection: 0) > indexPath.item else { return }
+                (collectionView.item(at: indexPath) as? MediaGridItem)?.setThumbnail(image)
+            }
+        }
+        return cell
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let index = indexPaths.first?.item else { return }
+        openMedia(at: index)
+        collectionView.deselectItems(at: indexPaths)
+    }
+}
+
+@MainActor
+private final class MediaGridItem: NSCollectionViewItem {
+    static let identifier = NSUserInterfaceItemIdentifier("MediaGridItem")
+    private let thumbnailView = AspectFillImageView()
+    private let videoBadge = NSTextField(labelWithString: "VIDEO")
+
+    override func loadView() { view = NSView() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        thumbnailView.translatesAutoresizingMaskIntoConstraints = false
+        thumbnailView.wantsLayer = true
+        thumbnailView.layer?.cornerRadius = 8
+        thumbnailView.layer?.masksToBounds = true
+        thumbnailView.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
+        thumbnailView.contentTintColor = .secondaryLabelColor
+        videoBadge.font = .monospacedSystemFont(ofSize: 10, weight: .bold)
+        videoBadge.textColor = .white
+        videoBadge.backgroundColor = .black.withAlphaComponent(0.6)
+        videoBadge.wantsLayer = true
+        videoBadge.layer?.cornerRadius = 4
+        videoBadge.layer?.masksToBounds = true
+        videoBadge.alignment = .center
+        videoBadge.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(thumbnailView)
+        view.addSubview(videoBadge)
+        NSLayoutConstraint.activate([
+            thumbnailView.leadingAnchor.constraint(equalTo: view.leadingAnchor), thumbnailView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            thumbnailView.topAnchor.constraint(equalTo: view.topAnchor), thumbnailView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            videoBadge.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), videoBadge.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
+            videoBadge.widthAnchor.constraint(equalToConstant: 43), videoBadge.heightAnchor.constraint(equalToConstant: 19)
+        ])
+    }
+
+    func configure(item: MediaLibraryViewController.MediaItem, thumbnail: NSImage?) {
+        videoBadge.isHidden = !item.isVideo
+        setThumbnail(thumbnail)
+    }
+
+    func setThumbnail(_ image: NSImage?) {
+        thumbnailView.image = image ?? NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
+        thumbnailView.contentTintColor = image == nil ? .secondaryLabelColor : nil
     }
 }
