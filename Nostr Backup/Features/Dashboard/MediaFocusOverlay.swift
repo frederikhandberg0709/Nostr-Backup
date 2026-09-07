@@ -13,7 +13,7 @@ final class MediaFocusOverlay: NSView {
     private let playerView = AVPlayerView()
     private let footer = NSVisualEffectView()
     private let fileLabel = NSTextField(labelWithString: "")
-    private let stateLabel = NSTextField(labelWithString: "")
+    private let localStatusIndicator = LocalMediaStatusIndicator()
     private let messageLabel = NSTextField(labelWithString: "")
     private let saveButton = NSButton()
     private let previousButton = MediaNavigationButton()
@@ -134,15 +134,13 @@ final class MediaFocusOverlay: NSView {
             imageView.isHidden = false
             imageView.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
             imageView.contentTintColor = .secondaryLabelColor
-            stateLabel.stringValue = "Not saved locally"
-            stateLabel.textColor = .systemYellow
+            localStatusIndicator.configure(isSavedLocally: false)
             saveButton.isHidden = false
             resetTransform()
             return
         }
 
-        stateLabel.stringValue = "Saved locally"
-        stateLabel.textColor = .white.withAlphaComponent(0.7)
+        localStatusIndicator.configure(isSavedLocally: true)
         saveButton.isHidden = true
         if Self.isVideo(url) {
             imageView.isHidden = true
@@ -200,7 +198,6 @@ final class MediaFocusOverlay: NSView {
         fileLabel.font = .systemFont(ofSize: 13, weight: .medium)
         fileLabel.textColor = .white.withAlphaComponent(0.9)
         fileLabel.lineBreakMode = .byTruncatingMiddle
-        stateLabel.font = .systemFont(ofSize: 12)
         messageLabel.font = .systemFont(ofSize: 12)
         saveButton.title = "Save locally"
         saveButton.bezelStyle = .rounded
@@ -210,7 +207,7 @@ final class MediaFocusOverlay: NSView {
         configureNavigationButton(previousButton, symbol: "chevron.left", action: #selector(showPrevious))
         configureNavigationButton(nextButton, symbol: "chevron.right", action: #selector(showNext))
         [imageView, playerView, footer, previousButton, nextButton].forEach(addSubview)
-        [fileLabel, stateLabel, messageLabel, saveButton].forEach(footer.addSubview)
+        [fileLabel, localStatusIndicator, messageLabel, saveButton].forEach(footer.addSubview)
     }
 
     private func layoutMedia() {
@@ -231,17 +228,25 @@ final class MediaFocusOverlay: NSView {
         baseMediaFrame = stageFrame
         if zoomScale == 1 { zoomAnchor = CGPoint(x: stageFrame.midX, y: stageFrame.midY) }
 
-        let footerWidth = min(max(280, stageSize.width), max(1, bounds.width - 80))
-        footer.frame = NSRect(x: (bounds.width - footerWidth) / 2, y: max(24, stageFrame.minY - 54), width: footerWidth, height: footerHeight)
         let inset: CGFloat = 10
         let saveWidth: CGFloat = saveButton.isHidden ? 0 : 100
-        let stateWidth: CGFloat = 100
+        let statusWidth: CGFloat = 10
         let messageWidth: CGFloat = messageLabel.stringValue.isEmpty ? 0 : 140
-        let fileWidth = max(CGFloat(20), footerWidth - inset * 2 - stateWidth - saveWidth - messageWidth)
+        let statusSpacing: CGFloat = 6
+        let saveSpacing: CGFloat = saveButton.isHidden ? 0 : 4
+        let messageSpacing: CGFloat = messageWidth > 0 ? 4 : 0
+        let fixedContentWidth = inset * 2 + statusSpacing + statusWidth + saveSpacing + saveWidth + messageSpacing + messageWidth
+        let naturalFileWidth = ceil(fileLabel.intrinsicContentSize.width)
+        let footerWidth = min(
+            fixedContentWidth + naturalFileWidth,
+            max(1, bounds.width - 32)
+        )
+        footer.frame = NSRect(x: (bounds.width - footerWidth) / 2, y: max(24, stageFrame.minY - 54), width: footerWidth, height: footerHeight)
+        let fileWidth = max(0, footerWidth - fixedContentWidth)
         fileLabel.frame = NSRect(x: inset, y: 10, width: fileWidth, height: 18)
-        stateLabel.frame = NSRect(x: fileLabel.frame.maxX + 6, y: 10, width: stateWidth, height: 18)
-        saveButton.frame = NSRect(x: stateLabel.frame.maxX + 4, y: 5, width: saveWidth, height: 28)
-        messageLabel.frame = NSRect(x: saveButton.frame.maxX + 4, y: 10, width: messageWidth, height: 18)
+        localStatusIndicator.frame = NSRect(x: fileLabel.frame.maxX + statusSpacing, y: 14, width: statusWidth, height: statusWidth)
+        saveButton.frame = NSRect(x: localStatusIndicator.frame.maxX + saveSpacing, y: 5, width: saveWidth, height: 28)
+        messageLabel.frame = NSRect(x: saveButton.frame.maxX + messageSpacing, y: 10, width: messageWidth, height: 18)
         previousButton.frame = NSRect(x: 24, y: (bounds.height - 38) / 2, width: 38, height: 38)
         nextButton.frame = NSRect(x: bounds.width - 62, y: (bounds.height - 38) / 2, width: 38, height: 38)
         applyTransform()
@@ -569,6 +574,26 @@ private final class LayerAnimationDelegate: NSObject, CAAnimationDelegate {
 
     func animationDidStop(_ anim: CAAnimation, finished flag: Bool) {
         completion(flag)
+    }
+}
+
+@MainActor
+private final class LocalMediaStatusIndicator: NSView {
+    override init(frame: NSRect = .zero) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(isSavedLocally: Bool) {
+        layer?.backgroundColor = (isSavedLocally ? NSColor.systemGreen : NSColor.systemRed).cgColor
+        let statusText = isSavedLocally ? "Saved locally" : "Not saved locally"
+        setHoverTooltip(statusText)
+        setAccessibilityLabel(statusText)
     }
 }
 
