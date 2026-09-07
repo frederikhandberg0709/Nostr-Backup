@@ -6,6 +6,7 @@ import ImageIO
 final class DashboardViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let npub: String
     private let events: [NostrEvent]
+    private let archivedEventIDs: Set<String>
     private let linkedNotesByID: [String: NostrEvent]
     private var profilesByPublicKey: [String: NostrProfile]
     private var repliesByPostID: [String: [NostrEvent]] = [:]
@@ -19,6 +20,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
     init(npub: String, events: [NostrEvent]) {
         self.npub = npub
+        archivedEventIDs = Set(events.map(\.id))
         if let publicKey = try? NpubDecoder.publicKey(from: npub) {
             self.events = events.filter { $0.kind == 1 && $0.pubkey == publicKey }.sorted { $0.createdAt > $1.createdAt }
         } else {
@@ -71,7 +73,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
             linkedNotesByID: linkedNotesByID,
             profilesByPublicKey: profilesByPublicKey,
             replies: replies,
-            showsReplies: expandedPostIDs.contains(event.id)
+            showsReplies: expandedPostIDs.contains(event.id),
+            archivedEventIDs: archivedEventIDs
         )
         let columnWidth = tableColumn?.width ?? tableView.bounds.width
         rowView.prepareForMeasurement(contentWidth: max(1, columnWidth - 32))
@@ -217,10 +220,12 @@ private final class TimelineNoteRowView: NSTableCellView {
     private let profilesByPublicKey: [String: NostrProfile]
     private let replies: [NostrEvent]
     private let showsReplies: Bool
+    private let archivedEventIDs: Set<String>
     private let avatarView = ProfileAvatarView(diameter: 34)
     private let nameLabel = NSTextField(labelWithString: "")
     private let usernameLabel = NSTextField(labelWithString: "")
     private let dateLabel = NSTextField(labelWithString: "")
+    private let backupStatus = BackupStatusIndicator()
     private let contentStack = NSStackView()
     private var trackingArea: NSTrackingArea?
     private var isHovering = false
@@ -233,12 +238,14 @@ private final class TimelineNoteRowView: NSTableCellView {
         linkedNotesByID: [String: NostrEvent],
         profilesByPublicKey: [String: NostrProfile],
         replies: [NostrEvent],
-        showsReplies: Bool
+        showsReplies: Bool,
+        archivedEventIDs: Set<String>
     ) {
         self.event = event
         self.profilesByPublicKey = profilesByPublicKey
         self.replies = replies
         self.showsReplies = showsReplies
+        self.archivedEventIDs = archivedEventIDs
         profile = profilesByPublicKey[event.pubkey]
         items = Self.contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
         super.init(frame: .zero)
@@ -259,11 +266,12 @@ private final class TimelineNoteRowView: NSTableCellView {
         usernameLabel.textColor = .secondaryLabelColor
         dateLabel.font = .systemFont(ofSize: 12)
         dateLabel.textColor = .secondaryLabelColor
+        backupStatus.configure(isBackedUp: archivedEventIDs.contains(event.id))
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 8
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        [avatarView, nameLabel, usernameLabel, dateLabel].forEach { view in
+        [avatarView, nameLabel, usernameLabel, backupStatus, dateLabel].forEach { view in
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -287,7 +295,7 @@ private final class TimelineNoteRowView: NSTableCellView {
         commentsButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
         contentStack.addArrangedSubview(commentsButton)
         if showsReplies, !replies.isEmpty {
-            let thread = ReplyThreadView(rootEventID: event.id, replies: replies, profilesByPublicKey: profilesByPublicKey)
+            let thread = ReplyThreadView(rootEventID: event.id, replies: replies, profilesByPublicKey: profilesByPublicKey, archivedEventIDs: archivedEventIDs)
             thread.translatesAutoresizingMaskIntoConstraints = false
             contentStack.addArrangedSubview(thread)
             thread.leadingAnchor.constraint(equalTo: contentStack.leadingAnchor).isActive = true
@@ -299,14 +307,18 @@ private final class TimelineNoteRowView: NSTableCellView {
             avatarView.topAnchor.constraint(equalTo: topAnchor, constant: 16),
             avatarView.widthAnchor.constraint(equalToConstant: 34),
             avatarView.heightAnchor.constraint(equalToConstant: 34),
-            dateLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            dateLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
             dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             dateLabel.widthAnchor.constraint(equalToConstant: 116),
+            backupStatus.trailingAnchor.constraint(equalTo: dateLabel.leadingAnchor, constant: -8),
+            backupStatus.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
+            backupStatus.widthAnchor.constraint(equalToConstant: 10),
+            backupStatus.heightAnchor.constraint(equalToConstant: 10),
             nameLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 10),
             nameLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
             usernameLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
             usernameLabel.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
-            usernameLabel.trailingAnchor.constraint(lessThanOrEqualTo: dateLabel.leadingAnchor, constant: -8),
+            usernameLabel.trailingAnchor.constraint(lessThanOrEqualTo: backupStatus.leadingAnchor, constant: -8),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             contentStack.topAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 14),
@@ -663,7 +675,7 @@ private final class ReplyThreadView: NSView {
     private let stack = NSStackView()
     private let comments: [(event: NostrEvent, depth: Int)]
 
-    init(rootEventID: String, replies: [NostrEvent], profilesByPublicKey: [String: NostrProfile]) {
+    init(rootEventID: String, replies: [NostrEvent], profilesByPublicKey: [String: NostrProfile], archivedEventIDs: Set<String>) {
         comments = Self.flattenedComments(rootEventID: rootEventID, replies: replies)
         super.init(frame: .zero)
         stack.orientation = .vertical
@@ -672,7 +684,12 @@ private final class ReplyThreadView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         comments.forEach { comment in
-            let view = ReplyCommentView(event: comment.event, depth: comment.depth, profile: profilesByPublicKey[comment.event.pubkey])
+            let view = ReplyCommentView(
+                event: comment.event,
+                depth: comment.depth,
+                profile: profilesByPublicKey[comment.event.pubkey],
+                isBackedUp: archivedEventIDs.contains(comment.event.id)
+            )
             view.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(view)
             NSLayoutConstraint.activate([
@@ -732,7 +749,7 @@ private final class ReplyCommentView: NSView {
     private let depth: Int
     private let bodyLabel: WrappingTextField
 
-    init(event: NostrEvent, depth: Int, profile: NostrProfile?) {
+    init(event: NostrEvent, depth: Int, profile: NostrProfile?, isBackedUp: Bool) {
         self.depth = depth
         bodyLabel = WrappingTextField(event.content)
         super.init(frame: .zero)
@@ -745,10 +762,12 @@ private final class ReplyCommentView: NSView {
         let name = NSTextField(labelWithString: profile?.displayName ?? Self.abbreviated(event.pubkey))
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         let date = NSTextField(labelWithString: Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .omitted))
+        let backupStatus = BackupStatusIndicator()
         date.font = .systemFont(ofSize: 11)
         date.textColor = .tertiaryLabelColor
+        backupStatus.configure(isBackedUp: isBackedUp)
         bodyLabel.font = .systemFont(ofSize: 14)
-        [threadLine, avatar, name, date, bodyLabel].forEach {
+        [threadLine, avatar, name, backupStatus, date, bodyLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -765,7 +784,11 @@ private final class ReplyCommentView: NSView {
             name.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
             date.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 6),
             date.centerYAnchor.constraint(equalTo: name.centerYAnchor),
-            date.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            backupStatus.leadingAnchor.constraint(equalTo: date.trailingAnchor, constant: 6),
+            backupStatus.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            backupStatus.widthAnchor.constraint(equalToConstant: 9),
+            backupStatus.heightAnchor.constraint(equalToConstant: 9),
+            backupStatus.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
             bodyLabel.leadingAnchor.constraint(equalTo: name.leadingAnchor),
             bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
             bodyLabel.topAnchor.constraint(equalTo: avatar.bottomAnchor, constant: 4),
@@ -787,6 +810,25 @@ private final class ReplyCommentView: NSView {
     private static func abbreviated(_ publicKey: String) -> String {
         guard publicKey.count > 16 else { return publicKey }
         return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
+    }
+}
+
+@MainActor
+private final class BackupStatusIndicator: NSView {
+    override init(frame: NSRect = .zero) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(isBackedUp: Bool) {
+        layer?.backgroundColor = (isBackedUp ? NSColor.systemGreen : NSColor.systemRed).cgColor
+        toolTip = isBackedUp ? "Backed up locally" : "Not backed up locally"
+        setAccessibilityLabel(toolTip)
     }
 }
 
