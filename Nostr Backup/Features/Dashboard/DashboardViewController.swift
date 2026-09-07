@@ -7,7 +7,9 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private let npub: String
     private let events: [NostrEvent]
     private let linkedNotesByID: [String: NostrEvent]
-    private let profilesByPublicKey: [String: NostrProfile]
+    private var profilesByPublicKey: [String: NostrProfile]
+    private var repliesByPostID: [String: [NostrEvent]] = [:]
+    private var expandedPostIDs = Set<String>()
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
     private var rowHeightReloadWorkItem: DispatchWorkItem?
@@ -39,6 +41,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     override func viewDidLoad() {
         super.viewDidLoad()
         buildInterface()
+        loadReplies()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { events.count }
@@ -62,10 +65,18 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
-        let rowView = TimelineNoteRowView(event: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
+        let replies = repliesByPostID[event.id] ?? []
+        let rowView = TimelineNoteRowView(
+            event: event,
+            linkedNotesByID: linkedNotesByID,
+            profilesByPublicKey: profilesByPublicKey,
+            replies: replies,
+            showsReplies: expandedPostIDs.contains(event.id)
+        )
         let columnWidth = tableColumn?.width ?? tableView.bounds.width
         rowView.prepareForMeasurement(contentWidth: max(1, columnWidth - 32))
         rowView.onOpenMedia = { [weak self] reference in self?.openMedia(reference) }
+        rowView.onToggleReplies = { [weak self] in self?.toggleReplies(for: event.id) }
         return rowView
     }
 
@@ -77,6 +88,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
             event: events[row],
             linkedNotesByID: linkedNotesByID,
             profilesByPublicKey: profilesByPublicKey,
+            replies: repliesByPostID[events[row].id] ?? [],
+            showsReplies: expandedPostIDs.contains(events[row].id),
             contentWidth: max(1, columnWidth - 32)
         )
         rowHeightCache[row] = height
@@ -142,6 +155,46 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         overlay.present(over: view)
     }
 
+    private func loadReplies() {
+        let postIDs = events.map(\.id)
+        guard !postIDs.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let replies = await NostrRelayClient().fetchReplies(to: postIDs)
+            let postIDSet = Set(postIDs)
+            let grouped = Dictionary(grouping: replies.filter { reply in
+                reply.tags.contains { tag in tag.first == "e" && tag.count > 1 && postIDSet.contains(tag[1]) }
+            }) { reply in
+                // NIP-10 replies retain the root event in their e-tags. This
+                // also handles older clients that only supply one e-tag.
+                reply.tags.first { tag in tag.first == "e" && tag.count > 1 && postIDSet.contains(tag[1]) }![1]
+            }
+            let profileEvents = await NostrRelayClient().fetchProfiles(
+                publicKeys: Array(Set(replies.map(\.pubkey)))
+            )
+            profileEvents.forEach {
+                if let profile = NostrProfile(event: $0) { self.profilesByPublicKey[$0.pubkey] = profile }
+            }
+            self.repliesByPostID = grouped
+            self.refreshTimelineLayout()
+        }
+    }
+
+    private func toggleReplies(for postID: String) {
+        if expandedPostIDs.contains(postID) {
+            expandedPostIDs.remove(postID)
+        } else {
+            expandedPostIDs.insert(postID)
+        }
+        refreshTimelineLayout()
+    }
+
+    private func refreshTimelineLayout() {
+        rowHeightCache.removeAll()
+        tableView.reloadData()
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<events.count))
+    }
+
     private func abbreviated(_ npub: String) -> String {
         guard npub.count > 16 else { return npub }
         return "\(npub.prefix(10))…\(npub.suffix(5))"
@@ -162,6 +215,8 @@ private final class TimelineNoteRowView: NSTableCellView {
     private let items: [ContentItem]
     private let profile: NostrProfile?
     private let profilesByPublicKey: [String: NostrProfile]
+    private let replies: [NostrEvent]
+    private let showsReplies: Bool
     private let avatarView = ProfileAvatarView(diameter: 34)
     private let nameLabel = NSTextField(labelWithString: "")
     private let usernameLabel = NSTextField(labelWithString: "")
@@ -171,14 +226,19 @@ private final class TimelineNoteRowView: NSTableCellView {
     private var isHovering = false
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
+    var onToggleReplies: (() -> Void)?
 
     init(
         event: NostrEvent,
         linkedNotesByID: [String: NostrEvent],
-        profilesByPublicKey: [String: NostrProfile]
+        profilesByPublicKey: [String: NostrProfile],
+        replies: [NostrEvent],
+        showsReplies: Bool
     ) {
         self.event = event
         self.profilesByPublicKey = profilesByPublicKey
+        self.replies = replies
+        self.showsReplies = showsReplies
         profile = profilesByPublicKey[event.pubkey]
         items = Self.contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
         super.init(frame: .zero)
@@ -217,6 +277,22 @@ private final class TimelineNoteRowView: NSTableCellView {
                 contentView.trailingAnchor.constraint(equalTo: contentStack.trailingAnchor)
             ])
         }
+        let commentsButton = NSButton(title: "\(replies.count) \(replies.count == 1 ? "Comment" : "Comments")", target: self, action: #selector(toggleReplies(_:)))
+        commentsButton.image = NSImage(systemSymbolName: "bubble.left", accessibilityDescription: "Comments")
+        commentsButton.bezelStyle = .inline
+        commentsButton.isBordered = false
+        commentsButton.contentTintColor = .secondaryLabelColor
+        commentsButton.imagePosition = .imageLeading
+        commentsButton.toolTip = showsReplies ? "Hide comments" : "Show comments"
+        commentsButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        contentStack.addArrangedSubview(commentsButton)
+        if showsReplies, !replies.isEmpty {
+            let thread = ReplyThreadView(rootEventID: event.id, replies: replies, profilesByPublicKey: profilesByPublicKey)
+            thread.translatesAutoresizingMaskIntoConstraints = false
+            contentStack.addArrangedSubview(thread)
+            thread.leadingAnchor.constraint(equalTo: contentStack.leadingAnchor).isActive = true
+            thread.trailingAnchor.constraint(equalTo: contentStack.trailingAnchor).isActive = true
+        }
         addSubview(contentStack)
         NSLayoutConstraint.activate([
             avatarView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
@@ -250,6 +326,8 @@ private final class TimelineNoteRowView: NSTableCellView {
                 label.setPreferredWrappingWidth(contentWidth)
             } else if let embeddedNote = view as? EmbeddedNoteCard {
                 embeddedNote.prepareForMeasurement(contentWidth: contentWidth)
+            } else if let thread = view as? ReplyThreadView {
+                thread.prepareForMeasurement(contentWidth: contentWidth)
             }
         }
     }
@@ -258,6 +336,8 @@ private final class TimelineNoteRowView: NSTableCellView {
         event: NostrEvent,
         linkedNotesByID: [String: NostrEvent],
         profilesByPublicKey: [String: NostrProfile],
+        replies: [NostrEvent],
+        showsReplies: Bool,
         contentWidth: CGFloat
     ) -> CGFloat {
         let items = contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
@@ -276,9 +356,14 @@ private final class TimelineNoteRowView: NSTableCellView {
             }
         }
 
+        var heights = itemHeights
+        heights.append(26) // Comment affordance.
+        if showsReplies, !replies.isEmpty {
+            heights.append(ReplyThreadView.measuredHeight(rootEventID: event.id, replies: replies, contentWidth: contentWidth))
+        }
         // The content stack begins 64 points below the outer card's top and
         // ends 16 points above its bottom. Arranged items are separated by 8.
-        return ceil(80 + itemHeights.reduce(0, +) + CGFloat(max(0, itemHeights.count - 1)) * 8)
+        return ceil(80 + heights.reduce(0, +) + CGFloat(max(0, heights.count - 1)) * 8)
     }
 
     override func updateTrackingAreas() {
@@ -416,7 +501,7 @@ private final class TimelineNoteRowView: NSTableCellView {
         ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
 
-    private static func wrappedTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+    fileprivate static func wrappedTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         let bounds = (text as NSString).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
@@ -447,6 +532,10 @@ private final class TimelineNoteRowView: NSTableCellView {
     @objc private func openLink(_ sender: NSButton) {
         guard let string = (sender as? PayloadButton)?.payload as? String, let url = URL(string: string) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func toggleReplies(_ sender: NSButton) {
+        onToggleReplies?()
     }
 }
 
@@ -559,6 +648,140 @@ private final class EmbeddedNoteCard: NSView {
         borderAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.borderColor = borderColor
         layer.add(borderAnimation, forKey: "embeddedNoteHoverBorder")
+    }
+
+    private static func abbreviated(_ publicKey: String) -> String {
+        guard publicKey.count > 16 else { return publicKey }
+        return "\(publicKey.prefix(8))…\(publicKey.suffix(6))"
+    }
+}
+
+/// A compact, indented presentation of a NIP-10 reply tree. The fetched events
+/// live only in this view controller; this view has no archive or disk access.
+@MainActor
+private final class ReplyThreadView: NSView {
+    private let stack = NSStackView()
+    private let comments: [(event: NostrEvent, depth: Int)]
+
+    init(rootEventID: String, replies: [NostrEvent], profilesByPublicKey: [String: NostrProfile]) {
+        comments = Self.flattenedComments(rootEventID: rootEventID, replies: replies)
+        super.init(frame: .zero)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        comments.forEach { comment in
+            let view = ReplyCommentView(event: comment.event, depth: comment.depth, profile: profilesByPublicKey[comment.event.pubkey])
+            view.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: stack.trailingAnchor)
+            ])
+        }
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func prepareForMeasurement(contentWidth: CGFloat) {
+        for view in stack.arrangedSubviews {
+            (view as? ReplyCommentView)?.prepareForMeasurement(contentWidth: contentWidth)
+        }
+    }
+
+    static func measuredHeight(rootEventID: String, replies: [NostrEvent], contentWidth: CGFloat) -> CGFloat {
+        let comments = flattenedComments(rootEventID: rootEventID, replies: replies)
+        let heights = comments.map { comment in
+            ReplyCommentView.measuredHeight(event: comment.event, depth: comment.depth, contentWidth: contentWidth)
+        }
+        return heights.reduce(0, +) + CGFloat(max(0, heights.count - 1)) * 8
+    }
+
+    private static func flattenedComments(rootEventID: String, replies: [NostrEvent]) -> [(event: NostrEvent, depth: Int)] {
+        let byID = Dictionary(uniqueKeysWithValues: replies.map { ($0.id, $0) })
+        let children = Dictionary(grouping: replies) { reply -> String in
+            // The last e-tag is the immediate parent under NIP-10. Older
+            // clients with a single e-tag naturally resolve to the root.
+            reply.tags.last(where: { $0.first == "e" && $0.count > 1 })?[1] ?? rootEventID
+        }
+        func visit(parentID: String, depth: Int, ancestors: Set<String>) -> [(event: NostrEvent, depth: Int)] {
+            (children[parentID] ?? []).sorted { $0.createdAt < $1.createdAt }.flatMap { reply in
+                guard !ancestors.contains(reply.id) else { return [(event: NostrEvent, depth: Int)]() }
+                let childDepth = min(depth, 5)
+                return [(reply, childDepth)] + visit(parentID: reply.id, depth: childDepth + 1, ancestors: ancestors.union([reply.id]))
+            }
+        }
+        // A malformed/missing parent remains visible at the root level.
+        let roots = replies.filter {
+            let parent = $0.tags.last(where: { $0.first == "e" && $0.count > 1 })?[1]
+            return parent == nil || parent == rootEventID || byID[parent!] == nil
+        }.sorted { $0.createdAt < $1.createdAt }
+        return roots.flatMap { reply in [(reply, 0)] + visit(parentID: reply.id, depth: 1, ancestors: [reply.id]) }
+    }
+}
+
+@MainActor
+private final class ReplyCommentView: NSView {
+    private let depth: Int
+    private let bodyLabel: WrappingTextField
+
+    init(event: NostrEvent, depth: Int, profile: NostrProfile?) {
+        self.depth = depth
+        bodyLabel = WrappingTextField(event.content)
+        super.init(frame: .zero)
+        let indent = CGFloat(depth) * 18
+        let threadLine = NSView()
+        threadLine.wantsLayer = true
+        threadLine.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.65).cgColor
+        let avatar = ProfileAvatarView(diameter: 24)
+        avatar.configure(with: profile?.pictureURL)
+        let name = NSTextField(labelWithString: profile?.displayName ?? Self.abbreviated(event.pubkey))
+        name.font = .systemFont(ofSize: 13, weight: .semibold)
+        let date = NSTextField(labelWithString: Date(timeIntervalSince1970: TimeInterval(event.createdAt)).formatted(date: .abbreviated, time: .omitted))
+        date.font = .systemFont(ofSize: 11)
+        date.textColor = .tertiaryLabelColor
+        bodyLabel.font = .systemFont(ofSize: 14)
+        [threadLine, avatar, name, date, bodyLabel].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            threadLine.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent + 7),
+            threadLine.topAnchor.constraint(equalTo: topAnchor),
+            threadLine.bottomAnchor.constraint(equalTo: bottomAnchor),
+            threadLine.widthAnchor.constraint(equalToConstant: 2),
+            avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: indent + 18),
+            avatar.topAnchor.constraint(equalTo: topAnchor),
+            avatar.widthAnchor.constraint(equalToConstant: 24),
+            avatar.heightAnchor.constraint(equalToConstant: 24),
+            name.leadingAnchor.constraint(equalTo: avatar.trailingAnchor, constant: 7),
+            name.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
+            date.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 6),
+            date.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            date.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            bodyLabel.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bodyLabel.topAnchor.constraint(equalTo: avatar.bottomAnchor, constant: 4),
+            bodyLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        ])
+        name.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func prepareForMeasurement(contentWidth: CGFloat) {
+        bodyLabel.setPreferredWrappingWidth(max(1, contentWidth - CGFloat(depth) * 18 - 49))
+    }
+
+    static func measuredHeight(event: NostrEvent, depth: Int, contentWidth: CGFloat) -> CGFloat {
+        36 + TimelineNoteRowView.wrappedTextHeight(event.content, font: .systemFont(ofSize: 14), width: max(1, contentWidth - CGFloat(depth) * 18 - 49))
     }
 
     private static func abbreviated(_ publicKey: String) -> String {

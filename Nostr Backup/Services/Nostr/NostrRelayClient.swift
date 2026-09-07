@@ -60,6 +60,23 @@ struct NostrRelayClient {
         return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// Replies are intentionally a live, display-only lookup. Callers must not
+    /// add these events to a personal archive unless they are authored by the
+    /// account being backed up.
+    func fetchReplies(to eventIDs: [String]) async -> [NostrEvent] {
+        guard !eventIDs.isEmpty else { return [] }
+        var uniqueEvents: [String: NostrEvent] = [:]
+
+        for relayURL in relayURLs {
+            guard let events = try? await fetchPage(
+                from: relayURL,
+                filter: ["#e": eventIDs, "kinds": [1], "limit": pageSize]
+            ) else { continue }
+            events.forEach { uniqueEvents[$0.id] = $0 }
+        }
+        return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
+    }
+
     private func fetchAllEvents(from relayURL: URL, publicKey: String) async throws -> [NostrEvent] {
         var allEvents: [NostrEvent] = []
         var until: Int?
