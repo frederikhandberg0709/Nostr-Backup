@@ -827,8 +827,9 @@ private final class BackupStatusIndicator: NSView {
 
     func configure(isBackedUp: Bool) {
         layer?.backgroundColor = (isBackedUp ? NSColor.systemGreen : NSColor.systemRed).cgColor
-        toolTip = isBackedUp ? "Backed up locally" : "Not backed up locally"
-        setAccessibilityLabel(toolTip)
+        let statusText = isBackedUp ? "Backed up locally" : "Not backed up locally"
+        setHoverTooltip(statusText)
+        setAccessibilityLabel(statusText)
     }
 }
 
