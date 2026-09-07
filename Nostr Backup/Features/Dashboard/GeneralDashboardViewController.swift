@@ -369,10 +369,20 @@ private final class MediaGridItem: NSCollectionViewItem {
     private let thumbnailView = AspectFillImageView()
     private let videoBadge = NSTextField(labelWithString: "VIDEO")
 
-    override func loadView() { view = NSView() }
+    override func loadView() { view = MediaGridCardView() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.wantsLayer = true
+        (view as? MediaGridCardView)?.onHoverChanged = { [weak self] isHovering in
+            self?.animateHover(isHovering)
+        }
+        (view as? MediaGridCardView)?.onPressed = { [weak self] in
+            self?.animatePress()
+        }
+        (view as? MediaGridCardView)?.onReleased = { [weak self] in
+            self?.animateRelease()
+        }
         thumbnailView.translatesAutoresizingMaskIntoConstraints = false
         thumbnailView.wantsLayer = true
         thumbnailView.layer?.cornerRadius = 8
@@ -405,5 +415,120 @@ private final class MediaGridItem: NSCollectionViewItem {
     func setThumbnail(_ image: NSImage?) {
         thumbnailView.image = image ?? NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
         thumbnailView.contentTintColor = image == nil ? .secondaryLabelColor : nil
+    }
+
+    private func animateHover(_ isHovering: Bool) {
+        guard let layer = view.layer else { return }
+        let opacity: Float = isHovering ? 0.9 : 1
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = layer.presentation()?.opacity ?? layer.opacity
+        animation.toValue = opacity
+        animation.duration = 0.2
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.opacity = opacity
+        CATransaction.commit()
+        layer.add(animation, forKey: "mediaGridHoverOpacity")
+    }
+
+    private func animatePress() {
+        guard let layer = view.layer else { return }
+        centerAnimationAnchor(for: layer)
+        let pressedTransform = CATransform3DMakeScale(0.96, 0.96, 1)
+        let pressAnimation = CABasicAnimation(keyPath: "transform")
+        pressAnimation.fromValue = layer.presentation()?.transform ?? layer.transform
+        pressAnimation.toValue = pressedTransform
+        pressAnimation.duration = 0.09
+        pressAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = pressedTransform
+        CATransaction.commit()
+        layer.add(pressAnimation, forKey: "mediaGridPressScale")
+        CATransaction.flush()
+    }
+
+    private func animateRelease() {
+        guard let layer = view.layer else { return }
+        let releaseAnimation = CABasicAnimation(keyPath: "transform")
+        releaseAnimation.fromValue = layer.presentation()?.transform ?? layer.transform
+        releaseAnimation.toValue = CATransform3DIdentity
+        releaseAnimation.duration = 0.16
+        releaseAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.transform = CATransform3DIdentity
+        layer.add(releaseAnimation, forKey: "mediaGridPressScale")
+    }
+
+    private func centerAnimationAnchor(for layer: CALayer) {
+        let center = CGPoint(x: 0.5, y: 0.5)
+        guard layer.anchorPoint != center else { return }
+        let oldAnchor = layer.anchorPoint
+        let position = layer.position
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.anchorPoint = center
+        layer.position = CGPoint(
+            x: position.x + (center.x - oldAnchor.x) * layer.bounds.width,
+            y: position.y + (center.y - oldAnchor.y) * layer.bounds.height
+        )
+        CATransaction.commit()
+    }
+}
+
+@MainActor
+private final class MediaGridCardView: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
+    var onPressed: (() -> Void)?
+    var onReleased: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+    private var mouseUpMonitor: Any?
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChanged?(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onPressed?()
+        removeMouseUpMonitor()
+        mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            self?.onReleased?()
+            self?.removeMouseUpMonitor()
+            return event
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func removeMouseUpMonitor() {
+        if let mouseUpMonitor {
+            NSEvent.removeMonitor(mouseUpMonitor)
+            self.mouseUpMonitor = nil
+        }
     }
 }
