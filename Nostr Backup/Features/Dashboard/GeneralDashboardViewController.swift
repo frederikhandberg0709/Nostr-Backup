@@ -63,7 +63,7 @@ final class GeneralDashboardViewController: NSViewController {
         stats.alignment = .leading
         stats.spacing = 12
 
-        let content = NSStackView(views: [identity, NSBox(), stats])
+        let content = NSStackView(views: [identity, stats])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 20
