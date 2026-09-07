@@ -11,6 +11,7 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
     private var rowHeightReloadWorkItem: DispatchWorkItem?
+    private var rowHeightCache: [Int: CGFloat] = [:]
 
     var onSaveMedia: ((BlossomMediaReference) async throws -> Bool)?
 
@@ -45,14 +46,14 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
     func tableViewColumnDidResize(_ notification: Notification) {
-        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<events.count))
         rowHeightReloadWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
                 context.allowsImplicitAnimation = false
-                self.tableView.reloadData()
+                self.rowHeightCache.removeAll()
+                self.tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<self.events.count))
             }
         }
         rowHeightReloadWorkItem = workItem
@@ -62,8 +63,24 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let event = events[row]
         let rowView = TimelineNoteRowView(event: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
+        let columnWidth = tableColumn?.width ?? tableView.bounds.width
+        rowView.prepareForMeasurement(contentWidth: max(1, columnWidth - 32))
         rowView.onOpenMedia = { [weak self] reference in self?.openMedia(reference) }
         return rowView
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if let height = rowHeightCache[row] { return height }
+
+        let columnWidth = max(1, tableView.tableColumns.first?.width ?? tableView.bounds.width)
+        let height = TimelineNoteRowView.measuredHeight(
+            event: events[row],
+            linkedNotesByID: linkedNotesByID,
+            profilesByPublicKey: profilesByPublicKey,
+            contentWidth: max(1, columnWidth - 32)
+        )
+        rowHeightCache[row] = height
+        return height
     }
 
     private func buildInterface() {
@@ -90,8 +107,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.delegate = self
         tableView.backgroundColor = .clear
         tableView.intercellSpacing = NSSize(width: 0, height: 8)
-        tableView.usesAutomaticRowHeights = true
-        tableView.rowHeight = 120 // An estimate for off-screen rows; Auto Layout supplies the final height.
+        tableView.usesAutomaticRowHeights = false
+        tableView.rowHeight = 120
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
@@ -155,7 +172,11 @@ private final class TimelineNoteRowView: NSTableCellView {
 
     var onOpenMedia: ((BlossomMediaReference) -> Void)?
 
-    init(event: NostrEvent, linkedNotesByID: [String: NostrEvent], profilesByPublicKey: [String: NostrProfile]) {
+    init(
+        event: NostrEvent,
+        linkedNotesByID: [String: NostrEvent],
+        profilesByPublicKey: [String: NostrProfile]
+    ) {
         self.event = event
         self.profilesByPublicKey = profilesByPublicKey
         profile = profilesByPublicKey[event.pubkey]
@@ -220,6 +241,45 @@ private final class TimelineNoteRowView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// Sets wrapping widths before NSTableView calculates this cell's automatic
+    /// height. Waiting for subview layout is too late when a row is shrinking.
+    func prepareForMeasurement(contentWidth: CGFloat) {
+        for view in contentStack.arrangedSubviews {
+            if let label = view as? WrappingTextField {
+                label.setPreferredWrappingWidth(contentWidth)
+            } else if let embeddedNote = view as? EmbeddedNoteCard {
+                embeddedNote.prepareForMeasurement(contentWidth: contentWidth)
+            }
+        }
+    }
+
+    static func measuredHeight(
+        event: NostrEvent,
+        linkedNotesByID: [String: NostrEvent],
+        profilesByPublicKey: [String: NostrProfile],
+        contentWidth: CGFloat
+    ) -> CGFloat {
+        let items = contentItems(for: event, linkedNotesByID: linkedNotesByID, profilesByPublicKey: profilesByPublicKey)
+        let itemHeights = items.map { item -> CGFloat in
+            switch item {
+            case let .text(text):
+                return wrappedTextHeight(text, font: .systemFont(ofSize: 15), width: contentWidth)
+            case .link:
+                return 22
+            case .image, .video:
+                return 160
+            case let .embeddedNote(note):
+                // Embedded cards have 49 points from their top to the body and
+                // 11 points from the body to their bottom.
+                return 60 + wrappedTextHeight(note.content, font: .systemFont(ofSize: 14), width: max(1, contentWidth - 24))
+            }
+        }
+
+        // The content stack begins 64 points below the outer card's top and
+        // ends 16 points above its bottom. Arranged items are separated by 8.
+        return ceil(80 + itemHeights.reduce(0, +) + CGFloat(max(0, itemHeights.count - 1)) * 8)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -356,6 +416,15 @@ private final class TimelineNoteRowView: NSTableCellView {
         ["m4v", "mov", "mp4", "mpeg", "mpg", "webm"].contains(url.pathExtension.lowercased())
     }
 
+    private static func wrappedTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+        let bounds = (text as NSString).boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        return ceil(max(font.boundingRectForFont.height, bounds.height))
+    }
+
     private static func displayName(for event: NostrEvent, profile: NostrProfile?) -> String {
         profile?.displayName ?? abbreviated(event.pubkey)
     }
@@ -443,6 +512,11 @@ private final class EmbeddedNoteCard: NSView {
 
     required init?(coder: NSCoder) { nil }
 
+    func prepareForMeasurement(contentWidth: CGFloat) {
+        // The embedded card has 12-point inset on either side of its body.
+        bodyLabel.setPreferredWrappingWidth(max(1, contentWidth - 24))
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
@@ -525,11 +599,16 @@ private final class WrappingTextField: NSTextField {
         updatePreferredWidth()
     }
 
-    private func updatePreferredWidth() {
-        let width = bounds.width
-        guard width > 0, abs(preferredMaxLayoutWidth - width) > 0.5 else { return }
+    func setPreferredWrappingWidth(_ width: CGFloat) {
+        let width = max(1, width)
+        guard abs(preferredMaxLayoutWidth - width) > 0.5 else { return }
         preferredMaxLayoutWidth = width
         invalidateIntrinsicContentSize()
+    }
+
+    private func updatePreferredWidth() {
+        guard bounds.width > 0 else { return }
+        setPreferredWrappingWidth(bounds.width)
     }
 }
 
