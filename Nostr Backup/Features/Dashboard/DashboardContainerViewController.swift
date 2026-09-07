@@ -211,8 +211,10 @@ private final class SidebarButton: NSButton {
     }
 
     private func updateAppearance() {
-        let background = isCurrentSection ? NSColor.selectedContentBackgroundColor : .controlBackgroundColor
-        let opacity: Float = isCurrentSection ? 1 : (isHovering ? 0.7 : 0)
+        let background = isCurrentSection
+            ? NSColor.selectedContentBackgroundColor
+            : NSColor.white.withAlphaComponent(0.12)
+        let opacity: Float = isCurrentSection || isHovering ? 1 : 0
         animateBackground(color: background.cgColor, opacity: opacity)
         let foreground = isCurrentSection ? NSColor.selectedMenuItemTextColor : .secondaryLabelColor
         iconView.contentTintColor = foreground
