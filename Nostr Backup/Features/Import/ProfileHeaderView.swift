@@ -69,9 +69,10 @@ final class ProfileHeaderView: NSView {
 
     private func loadImage(from url: URL) {
         Task { [weak self] in
-            guard let data = try? await URLSession.shared.data(from: url).0,
+            guard let data = await ProfileImageCache.shared.data(for: url),
                   let image = NSImage(data: data) else { return }
             self?.imageView.image = image
+            self?.imageView.contentTintColor = nil
         }
     }
 

@@ -103,7 +103,7 @@ final class GeneralDashboardViewController: NSViewController {
 
         if let pictureURL = profile?.pictureURL {
             Task { [weak imageView] in
-                guard let data = try? await URLSession.shared.data(from: pictureURL).0,
+                guard let data = await ProfileImageCache.shared.data(for: pictureURL),
                       let image = NSImage(data: data) else { return }
                 imageView?.image = image
                 imageView?.contentTintColor = nil

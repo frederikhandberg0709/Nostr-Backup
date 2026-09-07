@@ -919,7 +919,7 @@ private final class ProfileAvatarView: NSImageView {
     func configure(with pictureURL: URL?) {
         guard let pictureURL else { return }
         Task { [weak self] in
-            guard let data = try? await URLSession.shared.data(from: pictureURL).0,
+            guard let data = await ProfileImageCache.shared.data(for: pictureURL),
                   let image = NSImage(data: data) else { return }
             self?.image = image
             self?.contentTintColor = nil
