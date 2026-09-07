@@ -198,10 +198,12 @@ final class MediaLibraryViewController: NSViewController {
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.isSelectable = true
+        collectionView.backgroundColors = [.clear]
         collectionView.register(MediaGridItem.self, forItemWithIdentifier: MediaGridItem.identifier)
 
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.documentView = collectionView
         scrollView.translatesAutoresizingMaskIntoConstraints = false
