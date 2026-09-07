@@ -1,5 +1,6 @@
 import AVFoundation
 import Cocoa
+import ImageIO
 import UniformTypeIdentifiers
 
 @MainActor
@@ -300,25 +301,53 @@ final class MediaLibraryViewController: NSViewController {
         if let image = thumbnailCache[item.reference.hash] { completion(image); return }
         let hash = item.reference.hash
         Task { [weak self] in
-            let image = await Task.detached(priority: .userInitiated) {
-                let image: NSImage? = {
-                if item.isVideo {
-                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: item.localURL))
-                    generator.appliesPreferredTrackTransform = true
-                    if let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) {
-                        return NSImage(cgImage: cgImage, size: .zero)
-                    }
-                    return nil
-                } else {
-                    return NSImage(contentsOf: item.localURL)
-                }
-                }()
-                return image
+            let cgImage = await Task.detached(priority: .userInitiated) {
+                await Self.makeThumbnail(for: item)
             }.value
             guard let self else { return }
+            // Create NSImage only on the main actor. AppKit's lazy image decoding
+            // can otherwise create a bitmap context on a background thread.
+            let image = cgImage.map { NSImage(cgImage: $0, size: .zero) }
             self.thumbnailCache[hash] = image
             completion(image)
         }
+    }
+
+    nonisolated private static func makeThumbnail(for item: MediaItem) async -> CGImage? {
+        if item.isVideo {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: item.localURL))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 480, height: 480)
+            guard let (image, _) = try? await generator.image(at: .zero) else { return nil }
+            return normalizedThumbnail(from: image)
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 480,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let source = CGImageSourceCreateWithURL(item.localURL as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return normalizedThumbnail(from: image)
+    }
+
+    /// AppKit has trouble rendering certain RGB images advertised as 32-bit
+    /// bitmaps. Draw into a known-good sRGB/RGBA surface before displaying it.
+    nonisolated private static func normalizedThumbnail(from image: CGImage) -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: image.width,
+            height: image.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
     }
 
     private func openMedia(at index: Int) {
