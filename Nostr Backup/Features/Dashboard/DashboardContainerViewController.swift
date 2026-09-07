@@ -4,6 +4,7 @@ import Cocoa
 final class DashboardContainerViewController: NSViewController {
     private let npub: String
     private let events: [NostrEvent]
+    private let initialSection: DashboardSection
     private let contentContainer = NSView()
     private var currentContent: NSViewController?
     private var notesViewController: DashboardViewController?
@@ -13,13 +14,18 @@ final class DashboardContainerViewController: NSViewController {
         didSet { notesViewController?.onSaveMedia = onSaveMedia }
     }
 
+    var onImportNotes: (() async throws -> NotesImportSummary)? {
+        didSet { notesViewController?.onImportNotes = onImportNotes }
+    }
+
     var onImportBlossom: (() async throws -> BlossomImportSummary)? {
         didSet { mediaViewController?.onImportBlossom = onImportBlossom }
     }
 
-    init(npub: String, events: [NostrEvent]) {
+    init(npub: String, events: [NostrEvent], initialSection: DashboardSection = .general) {
         self.npub = npub
         self.events = events
+        self.initialSection = initialSection
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -30,7 +36,7 @@ final class DashboardContainerViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         buildInterface()
-        show(.general)
+        show(initialSection)
     }
 
     private func buildInterface() {
@@ -80,6 +86,7 @@ final class DashboardContainerViewController: NSViewController {
         case .notes:
             let notes = DashboardViewController(npub: npub, events: events)
             notes.onSaveMedia = onSaveMedia
+            notes.onImportNotes = onImportNotes
             notesViewController = notes
             content = notes
         case .media:

@@ -77,13 +77,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showDashboard(for npub: String) {
+    private func showDashboard(for npub: String, initialSection: DashboardSection = .general) {
         let archiveStore = NotesArchiveStore()
         guard let events = try? archiveStore.allEvents(for: npub) else { return }
 
-        let dashboard = DashboardContainerViewController(npub: npub, events: events)
+        let dashboard = DashboardContainerViewController(npub: npub, events: events, initialSection: initialSection)
         dashboard.onSaveMedia = { [blossomImportCoordinator] reference in
             try await blossomImportCoordinator.saveMedia(reference)
+        }
+        dashboard.onImportNotes = { [weak self, importCoordinator] in
+            let summary = try await importCoordinator.importNotes(for: npub)
+            self?.showDashboard(for: npub, initialSection: .notes)
+            return summary
         }
         dashboard.onImportBlossom = { [blossomImportCoordinator] in
             try await blossomImportCoordinator.importMedia(for: npub)

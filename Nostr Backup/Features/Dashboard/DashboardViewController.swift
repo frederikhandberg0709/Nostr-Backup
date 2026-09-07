@@ -13,10 +13,13 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private var expandedPostIDs = Set<String>()
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
+    private let importNotesButton = NSButton()
+    private let statusLabel = NSTextField(labelWithString: "")
     private var rowHeightReloadWorkItem: DispatchWorkItem?
     private var rowHeightCache: [Int: CGFloat] = [:]
 
     var onSaveMedia: ((BlossomMediaReference) async throws -> Bool)?
+    var onImportNotes: (() async throws -> NotesImportSummary)?
 
     init(npub: String, events: [NostrEvent]) {
         self.npub = npub
@@ -110,6 +113,16 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         subtitle.textColor = .secondaryLabelColor
         subtitle.translatesAutoresizingMaskIntoConstraints = false
 
+        configure(button: importNotesButton, title: "Import Notes", imageName: "note.text", action: #selector(importNotes(_:)))
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+
+        let header = NSStackView(views: [subtitle, importNotesButton, statusLabel])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+        header.translatesAutoresizingMaskIntoConstraints = false
+
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
@@ -129,17 +142,46 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.selectionHighlightStyle = .none
         scrollView.documentView = tableView
 
-        background.addSubview(subtitle)
+        background.addSubview(header)
         background.addSubview(scrollView)
         NSLayoutConstraint.activate([
-            subtitle.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 42),
-            subtitle.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -42),
-            subtitle.topAnchor.constraint(equalTo: background.topAnchor, constant: 30),
+            header.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 42),
+            header.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -42),
+            header.topAnchor.constraint(equalTo: background.topAnchor, constant: 30),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 16),
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
             scrollView.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -24)
         ])
+    }
+
+    private func configure(button: NSButton, title: String, imageName: String, action: Selector) {
+        button.title = title
+        button.target = self
+        button.action = action
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: imageName, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.controlSize = .large
+        button.font = .systemFont(ofSize: 14, weight: .semibold)
+    }
+
+    @objc private func importNotes(_ sender: NSButton) {
+        guard let onImportNotes else { return }
+        importNotesButton.isEnabled = false
+        statusLabel.stringValue = "Importing notes from Nostr relays…"
+        statusLabel.textColor = .secondaryLabelColor
+
+        Task { [weak self] in
+            do {
+                let summary = try await onImportNotes()
+                self?.statusLabel.stringValue = "Notes import complete: \(summary.eventCount) events saved."
+            } catch {
+                self?.statusLabel.stringValue = error.localizedDescription
+                self?.statusLabel.textColor = .systemRed
+            }
+            self?.importNotesButton.isEnabled = true
+        }
     }
 
     private func openMedia(_ reference: BlossomMediaReference) {
