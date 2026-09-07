@@ -16,8 +16,8 @@ final class MediaFocusOverlay: NSView {
     private let stateLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(labelWithString: "")
     private let saveButton = NSButton()
-    private let previousButton = NSButton()
-    private let nextButton = NSButton()
+    private let previousButton = MediaNavigationButton()
+    private let nextButton = MediaNavigationButton()
     private var player: AVPlayer?
     private var zoomScale: CGFloat = 1
     private var panOffset = CGPoint.zero
@@ -270,7 +270,7 @@ final class MediaFocusOverlay: NSView {
 
     private func configureNavigationButton(_ button: NSButton, symbol: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.bezelStyle = .circular
+        button.isBordered = false
         button.controlSize = .large
         button.contentTintColor = .white
         button.target = self
@@ -569,6 +569,103 @@ private final class LayerAnimationDelegate: NSObject, CAAnimationDelegate {
 
     func animationDidStop(_ anim: CAAnimation, finished flag: Bool) {
         completion(flag)
+    }
+}
+
+@MainActor
+private final class MediaNavigationButton: NSButton {
+    private var navigationTrackingArea: NSTrackingArea?
+    private var isHovered = false
+    private var isPressed = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureAppearance()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureAppearance()
+    }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let navigationTrackingArea { removeTrackingArea(navigationTrackingArea) }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        navigationTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateAppearance(animated: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateAppearance(animated: true)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressed = true
+        updateAppearance(animated: true)
+        super.mouseDown(with: event)
+        isPressed = false
+        updateAppearance(animated: true)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    private func configureAppearance() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.42).cgColor
+    }
+
+    private func updateAppearance(animated: Bool) {
+        guard let layer else { return }
+        let scale: CGFloat = isPressed ? 0.94 : (isHovered ? 1.08 : 1)
+        let background = NSColor.black.withAlphaComponent(isPressed ? 0.72 : (isHovered ? 0.62 : 0.42)).cgColor
+        let previousTransform = layer.presentation()?.transform ?? layer.transform
+        let previousBackground = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+        // NSButton's backing layer is anchored at its lower-left corner. Offset
+        // the scaled layer by the inverse amount so it grows around center
+        // without changing AppKit's managed layer position or hit target.
+        var transform = CATransform3DMakeScale(scale, scale, 1)
+        transform.m41 = (1 - scale) * bounds.midX
+        transform.m42 = (1 - scale) * bounds.midY
+        layer.transform = transform
+        layer.backgroundColor = background
+
+        guard animated else { return }
+        let duration: CFTimeInterval = isPressed ? 0.09 : 0.16
+        let timing = CAMediaTimingFunction(name: .easeOut)
+
+        let scaleAnimation = CABasicAnimation(keyPath: "transform")
+        scaleAnimation.fromValue = previousTransform
+        scaleAnimation.toValue = layer.transform
+        scaleAnimation.duration = duration
+        scaleAnimation.timingFunction = timing
+        layer.add(scaleAnimation, forKey: "mediaNavigationScale")
+
+        let backgroundAnimation = CABasicAnimation(keyPath: "backgroundColor")
+        backgroundAnimation.fromValue = previousBackground
+        backgroundAnimation.toValue = background
+        backgroundAnimation.duration = duration
+        backgroundAnimation.timingFunction = timing
+        layer.add(backgroundAnimation, forKey: "mediaNavigationBackground")
     }
 }
 
