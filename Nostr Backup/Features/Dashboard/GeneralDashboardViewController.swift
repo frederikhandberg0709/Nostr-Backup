@@ -24,7 +24,13 @@ final class GeneralDashboardViewController: NSViewController {
     }
 
     private func buildInterface() {
-        let profile = events.filter { $0.kind == 0 }.max { $0.createdAt < $1.createdAt }.flatMap(NostrProfile.init(event:))
+        // The archive also includes kind-0 metadata for authors of linked notes.
+        // Only the profile event authored by this dashboard's account belongs here.
+        let accountPublicKey = try? NpubDecoder.publicKey(from: npub)
+        let profile = events
+            .filter { $0.kind == 0 && $0.pubkey == accountPublicKey }
+            .max { $0.createdAt < $1.createdAt }
+            .flatMap(NostrProfile.init(event:))
         let mediaStats = BlossomMediaStore().storageStatistics()
         let imageView = AspectFillImageView()
         imageView.translatesAutoresizingMaskIntoConstraints = false
