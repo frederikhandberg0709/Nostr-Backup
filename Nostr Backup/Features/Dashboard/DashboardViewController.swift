@@ -5,7 +5,7 @@ import ImageIO
 @MainActor
 final class DashboardViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let npub: String
-    private let events: [NostrEvent]
+    private var events: [NostrEvent]
     private let archivedEventIDs: Set<String>
     private let linkedNotesByID: [String: NostrEvent]
     private var profilesByPublicKey: [String: NostrProfile]
@@ -14,6 +14,8 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
     private let mediaStore = BlossomMediaStore()
     private let tableView = NSTableView()
     private let importNotesButton = NSButton()
+    private let reloadNotesButton = NSButton()
+    private let subtitleLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private var rowHeightReloadWorkItem: DispatchWorkItem?
     private var rowHeightCache: [Int: CGFloat] = [:]
@@ -108,16 +110,17 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         background.blendingMode = .behindWindow
         background.state = .active
 
-        let subtitle = NSTextField(labelWithString: "\(events.count) notes saved locally · \(abbreviated(npub))")
-        subtitle.font = .systemFont(ofSize: 13)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.translatesAutoresizingMaskIntoConstraints = false
+        updateSubtitle()
+        subtitleLabel.font = .systemFont(ofSize: 13)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         configure(button: importNotesButton, title: "Import Notes", imageName: "note.text", action: #selector(importNotes(_:)))
+        configure(button: reloadNotesButton, title: "Reload", imageName: "arrow.clockwise", action: #selector(reloadNotes(_:)))
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
 
-        let header = NSStackView(views: [subtitle, importNotesButton, statusLabel])
+        let header = NSStackView(views: [subtitleLabel, importNotesButton, reloadNotesButton, statusLabel])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 12
@@ -184,6 +187,32 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         }
     }
 
+    /// Fetches current authored notes for display without changing the archive.
+    /// Posts absent from `archivedEventIDs` remain visibly marked as unbacked up.
+    @objc private func reloadNotes(_ sender: NSButton) {
+        guard let publicKey = try? NpubDecoder.publicKey(from: npub) else { return }
+        reloadNotesButton.isEnabled = false
+        statusLabel.stringValue = "Fetching latest notes from Nostr relays…"
+        statusLabel.textColor = .secondaryLabelColor
+
+        Task { [weak self] in
+            do {
+                let fetchedEvents = try await NostrRelayClient().fetchAuthoredEvents(publicKey: publicKey)
+                guard let self else { return }
+                var eventsByID = Dictionary(uniqueKeysWithValues: self.events.map { ($0.id, $0) })
+                fetchedEvents.filter { $0.kind == 1 }.forEach { eventsByID[$0.id] = $0 }
+                self.events = eventsByID.values.sorted { $0.createdAt > $1.createdAt }
+                self.statusLabel.stringValue = "Showing \(self.events.count) notes; red dots are not backed up."
+                self.updateSubtitle()
+                self.refreshTimelineLayout()
+            } catch {
+                self?.statusLabel.stringValue = error.localizedDescription
+                self?.statusLabel.textColor = .systemRed
+            }
+            self?.reloadNotesButton.isEnabled = true
+        }
+    }
+
     private func openMedia(_ reference: BlossomMediaReference) {
         let overlay = MediaFocusOverlay(reference: reference, mediaStore: mediaStore)
         overlay.onSave = { [weak self, weak overlay] reference in
@@ -240,10 +269,14 @@ final class DashboardViewController: NSViewController, NSTableViewDataSource, NS
         tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<events.count))
     }
 
-    private func abbreviated(_ npub: String) -> String {
-        guard npub.count > 16 else { return npub }
-        return "\(npub.prefix(10))…\(npub.suffix(5))"
+    private func updateSubtitle() {
+        let unarchivedCount = events.filter { !archivedEventIDs.contains($0.id) }.count
+        let archiveDescription = "\(events.count - unarchivedCount) notes backed up locally"
+        subtitleLabel.stringValue = unarchivedCount == 0
+            ? archiveDescription
+            : "\(archiveDescription) · \(unarchivedCount) not backed up"
     }
+
 }
 
 @MainActor
