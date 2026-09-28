@@ -1,6 +1,6 @@
 import Foundation
 
-/// Decodes the event ID in a NIP-19 `nevent` identifier.
+/// Decodes the event ID in a NIP-19 `nevent` or `note` identifier.
 enum NeventDecoder {
     static func eventID(from reference: String) -> String? {
         let value = reference.hasPrefix("nostr:") ? String(reference.dropFirst("nostr:".count)) : reference
@@ -11,7 +11,7 @@ enum NeventDecoder {
 
         let prefix = String(value[..<separator])
         let encodedData = value[value.index(after: separator)...]
-        guard prefix == "nevent", encodedData.count >= 7 else { return nil }
+        guard (prefix == "nevent" || prefix == "note"), encodedData.count >= 7 else { return nil }
 
         let alphabet = Array("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
         let values = encodedData.compactMap { alphabet.firstIndex(of: $0) }
@@ -19,6 +19,11 @@ enum NeventDecoder {
               polymod(expand(prefix) + values) == 1,
               let payload = convertBits(Array(values.dropLast(6)), from: 5, to: 8) else {
             return nil
+        }
+
+        if prefix == "note" {
+            guard payload.count == 32 else { return nil }
+            return payload.map { String(format: "%02x", $0) }.joined()
         }
 
         var index = 0

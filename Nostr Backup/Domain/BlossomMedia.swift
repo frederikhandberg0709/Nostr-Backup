@@ -2,8 +2,28 @@ import Foundation
 
 struct BlossomMediaReference: Hashable {
     let hash: String
-    let sourceURL: URL
+    let sourceURLs: [URL]
     let eventIDs: Set<String>
+
+    var sourceURL: URL { sourceURLs[0] }
+
+    init(hash: String, sourceURL: URL, eventIDs: Set<String>) {
+        self.init(hash: hash, sourceURLs: [sourceURL], eventIDs: eventIDs)
+    }
+
+    private init(hash: String, sourceURLs: [URL], eventIDs: Set<String>) {
+        self.hash = hash
+        self.sourceURLs = sourceURLs
+        self.eventIDs = eventIDs
+    }
+
+    func preferring(_ sourceURL: URL) -> BlossomMediaReference {
+        BlossomMediaReference(
+            hash: hash,
+            sourceURLs: [sourceURL] + sourceURLs.filter { $0 != sourceURL },
+            eventIDs: eventIDs
+        )
+    }
 
     var fileExtension: String? {
         let fileExtension = sourceURL.pathExtension.lowercased()
@@ -15,8 +35,6 @@ struct BlossomMediaReference: Hashable {
         return fileExtension
     }
 
-    static let supportedHosts: Set<String> = ["blossom.primal.net", "nostr.build", "blossom.ditto.pub"]
-
     static func find(in events: [NostrEvent]) -> [BlossomMediaReference] {
         var references: [String: BlossomMediaReference] = [:]
 
@@ -24,19 +42,20 @@ struct BlossomMediaReference: Hashable {
             let values = [event.content] + event.tags.flatMap { $0 }
             for value in values {
                 for url in urls(in: value) {
-                    guard let host = url.host?.lowercased(),
-                          supportedHosts.contains(host),
+                    guard url.scheme?.lowercased() == "https",
+                          url.host != nil,
                           let hash = blossomHash(from: url) else {
                         continue
                     }
 
-                    if var existing = references[hash] {
-                        existing = BlossomMediaReference(
+                    if let existing = references[hash] {
+                        let sourceURLs = Array(Set(existing.sourceURLs + [url]))
+                            .sorted { $0.absoluteString < $1.absoluteString }
+                        references[hash] = BlossomMediaReference(
                             hash: existing.hash,
-                            sourceURL: existing.sourceURL,
+                            sourceURLs: sourceURLs,
                             eventIDs: existing.eventIDs.union([event.id])
                         )
-                        references[hash] = existing
                     } else {
                         references[hash] = BlossomMediaReference(
                             hash: hash,
@@ -56,7 +75,8 @@ struct BlossomMediaReference: Hashable {
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
         let range = NSRange(value.startIndex..., in: value)
         return expression.matches(in: value, range: range).compactMap {
-            let match = String(value[Range($0.range, in: value)!]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?") )
+            let match = String(value[Range($0.range, in: value)!])
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?)]}"))
             return URL(string: match)
         }
     }
@@ -87,7 +107,7 @@ enum BlossomImportError: LocalizedError {
         case .noArchivedNotes:
             return "Import notes before importing Blossom media."
         case .noSupportedMedia:
-            return "No media from a supported Blossom host was found."
+            return "No hash-addressed Blossom media was found in the archived notes."
         case .integrityCheckFailed:
             return "A downloaded file did not match its Blossom hash."
         }

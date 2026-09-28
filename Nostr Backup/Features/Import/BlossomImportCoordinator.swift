@@ -33,8 +33,7 @@ final class BlossomImportCoordinator {
                     continue
                 }
 
-                let data = try await mediaClient.download(from: reference.sourceURL)
-                if try mediaStore.save(data, for: reference) {
+                if try await downloadAndSave(reference) {
                     downloadedCount += 1
                 } else {
                     alreadyStoredCount += 1
@@ -58,7 +57,19 @@ final class BlossomImportCoordinator {
             return false
         }
 
-        let data = try await mediaClient.download(from: reference.sourceURL)
-        return try mediaStore.save(data, for: reference)
+        return try await downloadAndSave(reference)
+    }
+
+    private func downloadAndSave(_ reference: BlossomMediaReference) async throws -> Bool {
+        var lastError: Error?
+        for sourceURL in reference.sourceURLs {
+            do {
+                let data = try await mediaClient.download(from: sourceURL)
+                return try mediaStore.save(data, for: reference.preferring(sourceURL))
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.badURL)
     }
 }

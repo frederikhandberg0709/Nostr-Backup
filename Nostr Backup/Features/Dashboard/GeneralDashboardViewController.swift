@@ -268,7 +268,11 @@ final class MediaLibraryViewController: NSViewController {
         Task { [weak self] in
             do {
                 let summary = try await onImportBlossom()
-                self?.statusLabel.stringValue = "Media import complete: \(summary.downloadedCount) downloaded, \(summary.alreadyStoredCount) already stored."
+                var message = "Media import complete: \(summary.downloadedCount) downloaded, \(summary.alreadyStoredCount) already stored."
+                if summary.failedCount > 0 {
+                    message += " \(summary.failedCount) failed."
+                }
+                self?.statusLabel.stringValue = message
                 self?.statusLabel.textColor = summary.failedCount == 0 ? .secondaryLabelColor : .systemOrange
                 self?.reloadMedia()
             } catch {

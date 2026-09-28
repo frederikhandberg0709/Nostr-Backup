@@ -39,11 +39,18 @@ final class NotesImportCoordinator {
     }
 
     private static func linkedEventIDs(in events: [NostrEvent]) -> Set<String> {
-        let pattern = #"nostr:nevent1[023456789acdefghjklmnpqrstuvwxyz]+"#
+        let pattern = #"nostr:(?:nevent|note)1[023456789acdefghjklmnpqrstuvwxyz]+"#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
 
         var eventIDs = Set<String>()
         for event in events {
+            for tag in event.tags where tag.first == "e" && tag.count > 1 {
+                let eventID = tag[1].lowercased()
+                if eventID.count == 64 && eventID.allSatisfy(\.isHexDigit) {
+                    eventIDs.insert(eventID)
+                }
+            }
+
             let range = NSRange(event.content.startIndex..., in: event.content)
             for match in expression.matches(in: event.content, range: range) {
                 guard let range = Range(match.range, in: event.content) else { continue }

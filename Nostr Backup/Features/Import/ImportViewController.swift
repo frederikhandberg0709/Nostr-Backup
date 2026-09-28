@@ -104,7 +104,7 @@ final class ImportViewController: NSViewController {
         configure(button: blossomButton, title: "Import Blossom", imageName: "photo.on.rectangle", action: #selector(importBlossom(_:)))
 
         let notesRow = importRow(button: notesButton, description: "Download and archive all events authored by this account")
-        let blossomRow = importRow(button: blossomButton, description: "Archive media from supported Blossom hosts")
+        let blossomRow = importRow(button: blossomButton, description: "Archive hash-addressed media linked from your notes")
 
         profileView.isHidden = true
         statusLabel.font = .systemFont(ofSize: 12)

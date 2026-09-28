@@ -35,13 +35,16 @@ struct NostrRelayClient {
     func fetchReferencedEvents(eventIDs: [String]) async -> [NostrEvent] {
         guard !eventIDs.isEmpty else { return [] }
         var uniqueEvents: [String: NostrEvent] = [:]
+        let batches = eventIDs.chunked(maxCount: 100)
 
         for relayURL in relayURLs {
-            guard let events = try? await fetchPage(
-                from: relayURL,
-                filter: ["ids": eventIDs, "limit": eventIDs.count]
-            ) else { continue }
-            events.forEach { uniqueEvents[$0.id] = $0 }
+            for batch in batches {
+                guard let events = try? await fetchPage(
+                    from: relayURL,
+                    filter: ["ids": batch, "limit": batch.count]
+                ) else { continue }
+                events.forEach { uniqueEvents[$0.id] = $0 }
+            }
         }
         return uniqueEvents.values.sorted { $0.createdAt < $1.createdAt }
     }
@@ -78,22 +81,45 @@ struct NostrRelayClient {
     }
 
     private func fetchAllEvents(from relayURL: URL, publicKey: String) async throws -> [NostrEvent] {
-        var allEvents: [NostrEvent] = []
+        var eventsByID: [String: NostrEvent] = [:]
         var until: Int?
 
         while true {
             var filter: [String: Any] = ["authors": [publicKey], "limit": pageSize]
             if let until { filter["until"] = until }
             let page = try await fetchPage(from: relayURL, filter: filter)
-            allEvents.append(contentsOf: page)
-
-            guard page.count == pageSize, let oldestEvent = page.min(by: { $0.createdAt < $1.createdAt }) else {
-                return allEvents
+            guard !page.isEmpty else {
+                return Array(eventsByID.values)
             }
 
-            // `until` is inclusive in a Nostr filter, so move past the oldest event.
-            guard oldestEvent.createdAt > 0 else { return allEvents }
-            until = oldestEvent.createdAt - 1
+            page.forEach { eventsByID[$0.id] = $0 }
+            guard let oldestTimestamp = page.map(\.createdAt).min() else {
+                return Array(eventsByID.values)
+            }
+
+            // A page can end in the middle of several events sharing one
+            // second. Query that boundary second on its own before moving
+            // `until` backwards so those tied events are not skipped.
+            let boundaryPage = try await fetchPage(
+                from: relayURL,
+                filter: [
+                    "authors": [publicKey],
+                    "since": oldestTimestamp,
+                    "until": oldestTimestamp,
+                    "limit": pageSize
+                ]
+            )
+            boundaryPage.forEach { eventsByID[$0.id] = $0 }
+
+            // Relays may silently clamp `limit`, so a short page does not prove that
+            // there are no older events. Keep walking backwards until an empty page.
+            // `until` is inclusive, therefore the next page starts one second earlier.
+            guard oldestTimestamp > 0 else { return Array(eventsByID.values) }
+            let nextUntil = oldestTimestamp - 1
+            guard until.map({ nextUntil < $0 }) ?? true else {
+                throw URLError(.cannotParseResponse)
+            }
+            until = nextUntil
         }
     }
 
@@ -152,6 +178,15 @@ struct NostrRelayClient {
             if let event = try? JSONDecoder().decode(NostrEvent.self, from: eventData) {
                 events.append(event)
             }
+        }
+    }
+}
+
+private extension Array {
+    func chunked(maxCount: Int) -> [[Element]] {
+        guard maxCount > 0 else { return [] }
+        return stride(from: 0, to: count, by: maxCount).map { start in
+            Array(self[start..<Swift.min(start + maxCount, count)])
         }
     }
 }
