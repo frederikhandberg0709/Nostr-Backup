@@ -29,9 +29,16 @@ struct BlossomMediaStore {
     }
 
     @discardableResult
-    func save(_ data: Data, for reference: BlossomMediaReference) throws -> Bool {
+    func save(
+        _ data: Data,
+        for reference: BlossomMediaReference,
+        reportedOriginalHash: String? = nil
+    ) throws -> Bool {
         let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard actualHash == reference.hash else { throw BlossomImportError.integrityCheckFailed }
+        let normalizedReportedHash = reportedOriginalHash?.lowercased()
+        guard actualHash == reference.hash || normalizedReportedHash == reference.hash else {
+            throw BlossomImportError.integrityCheckFailed
+        }
 
         let mediaURL = try preferredMediaURL(for: reference)
         let existingURL = try existingMediaURL(for: reference.hash)
@@ -41,7 +48,12 @@ struct BlossomMediaStore {
         } else if let existingURL, existingURL != mediaURL {
             try fileManager.moveItem(at: existingURL, to: mediaURL)
         }
-        try updateManifest(with: reference, mediaURL: mediaURL)
+        try updateManifest(
+            with: reference,
+            mediaURL: mediaURL,
+            contentHash: actualHash,
+            isTransformed: actualHash != reference.hash
+        )
         return wasDownloaded
     }
 
@@ -80,7 +92,12 @@ struct BlossomMediaStore {
         return directory
     }
 
-    private func updateManifest(with reference: BlossomMediaReference, mediaURL: URL) throws {
+    private func updateManifest(
+        with reference: BlossomMediaReference,
+        mediaURL: URL,
+        contentHash: String? = nil,
+        isTransformed: Bool? = nil
+    ) throws {
         let directory = try mediaDirectory()
         let manifestURL = directory.appendingPathComponent("manifest.json")
         let decoder = JSONDecoder()
@@ -94,7 +111,9 @@ struct BlossomMediaStore {
             eventIDs: Array(Set(oldRecord?.eventIDs ?? []).union(reference.eventIDs)).sorted(),
             importedAt: oldRecord?.importedAt ?? Date(),
             fileName: mediaURL.lastPathComponent,
-            byteCount: (try? fileManager.attributesOfItem(atPath: mediaURL.path)[.size] as? NSNumber)?.intValue
+            byteCount: (try? fileManager.attributesOfItem(atPath: mediaURL.path)[.size] as? NSNumber)?.intValue,
+            contentHash: contentHash ?? oldRecord?.contentHash,
+            isTransformed: isTransformed ?? oldRecord?.isTransformed
         )
 
         let encoder = JSONEncoder()
@@ -109,7 +128,7 @@ private struct BlossomManifest: Codable {
     let records: [String: BlossomMediaRecord]
 
     init(records: [String: BlossomMediaRecord]) {
-        formatVersion = 1
+        formatVersion = 2
         self.records = records
     }
 
@@ -127,6 +146,8 @@ private struct BlossomMediaRecord: Codable {
     let importedAt: Date
     let fileName: String?
     let byteCount: Int?
+    let contentHash: String?
+    let isTransformed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case hash
@@ -136,5 +157,7 @@ private struct BlossomMediaRecord: Codable {
         case importedAt = "imported_at"
         case fileName = "file_name"
         case byteCount = "byte_count"
+        case contentHash = "content_sha256"
+        case isTransformed = "is_transformed"
     }
 }

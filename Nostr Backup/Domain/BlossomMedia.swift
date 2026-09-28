@@ -101,6 +101,7 @@ enum BlossomImportError: LocalizedError {
     case noArchivedNotes
     case noSupportedMedia
     case integrityCheckFailed
+    case ownerMismatch
 
     var errorDescription: String? {
         switch self {
@@ -110,6 +111,8 @@ enum BlossomImportError: LocalizedError {
             return "No hash-addressed Blossom media was found in the archived notes."
         case .integrityCheckFailed:
             return "A downloaded file did not match its Blossom hash."
+        case .ownerMismatch:
+            return "The media server reports that this file belongs to another npub."
         }
     }
 }
